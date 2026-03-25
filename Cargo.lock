@@ -344,6 +344,7 @@ dependencies = [
  "crossbeam-channel",
  "image",
  "jxl-oxide",
+ "raw-window-handle 0.5.2",
  "resvg",
  "softbuffer",
  "tiny-skia",
