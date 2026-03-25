@@ -40,6 +40,8 @@ struct DevoidApp {
 
     /// Some((w,h)) → we need to emit a resize command this frame.
     pending_resize:     Option<(u32, u32)>,
+    /// True on the frame after a resize, when we send the centre command.
+    pending_center:     bool,
 }
 
 impl DevoidApp {
@@ -59,6 +61,7 @@ impl DevoidApp {
             loading:            false,
             loading_path:       None,
             pending_resize:     None,
+            pending_center:      false,
         };
 
         if let Some(path) = initial_path {
@@ -355,8 +358,7 @@ impl eframe::App for DevoidApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_load_messages(ctx);
 
-        // Resize window to image dimensions (first image only), clamped to
-        // the monitor's available work area so nothing goes off-screen.
+        // Frame N: send the resize; frame N+1: centre once the new size has landed.
         if let Some((img_w, img_h)) = self.pending_resize.take() {
             let (max_w, max_h) = monitor_work_area(ctx);
             // Reserve room for the taskbar (bottom) and title bar (top) so the
@@ -367,9 +369,14 @@ impl eframe::App for DevoidApp {
             let win_w = (img_w as f32 * scale).floor();
             let win_h = (img_h as f32 * scale).floor();
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(win_w, win_h)));
+            self.pending_center = true;   // centre on the next frame
+            ctx.request_repaint();
+        } else if self.pending_center {
+            // The resize has been applied; now we can centre accurately.
             if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
                 ctx.send_viewport_cmd(cmd);
             }
+            self.pending_center = false;
         }
 
         let input = self.read_input(ctx);
