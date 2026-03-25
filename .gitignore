@@ -1,0 +1,19 @@
+# Added by Devoid Viewer build process
+/target/
+
+# IDE folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Diagnostic/Log files
+*.log
+
+# Windows specific
+Thumbs.db
+Desktop.ini
+
+# WiX Toolset temporary build artifacts
+*.wixobj
+*.wixpdb
