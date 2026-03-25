@@ -1,13 +1,10 @@
-[build-dependencies]
-winres = "0.1"
-
 [package]
 name = "devoid_viewer"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "devoid_viewer"
+name = "DevoidViewer"
 path = "src/main.rs"
 
 [dependencies]
@@ -39,6 +36,9 @@ tiny-skia = "0.11"
 
 # ── Threading ────────────────────────────────────────────────
 crossbeam-channel = "0.5"
+
+[build-dependencies]
+winres = "0.1"
 
 [profile.release]
 opt-level     = 3
