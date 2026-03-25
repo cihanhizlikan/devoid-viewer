@@ -8,34 +8,32 @@ name = "DevoidViewer"
 path = "src/main.rs"
 
 [dependencies]
-# ── GUI ──────────────────────────────────────────────────────
-eframe = { version = "0.27", default-features = false, features = [
-    "default_fonts",
-    "glow",
-] }
-egui = "0.27"
+# ── Windowing & display ───────────────────────────────────────
+winit      = { version = "0.29", features = ["rwh_05"] }
+softbuffer = { version = "0.4", default-features = false }
 
-# ── Image decoding ───────────────────────────────────────────
+# ── Image decoding ────────────────────────────────────────────
 image = { version = "0.25", default-features = false, features = [
-    "bmp",
-    "png",
-    "jpeg",
-    "gif",
-    "webp",
-    "tiff",
-    "ico",
+    "bmp", "png", "jpeg", "gif", "webp", "tiff", "ico",
 ] }
 
 # JPEG XL
-jxl-oxide = { version = "0.10", features = ["image"] }
+jxl-oxide = { version = "0.10" }
 
 # SVG
 resvg     = "0.42"
 usvg      = "0.42"
 tiny-skia = "0.11"
 
-# ── Threading ────────────────────────────────────────────────
+# ── Threading ─────────────────────────────────────────────────
 crossbeam-channel = "0.5"
+
+# ── Windows API (delete dialog) ───────────────────────────────
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+] }
 
 [build-dependencies]
 winres = "0.1"

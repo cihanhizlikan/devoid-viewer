@@ -81,9 +81,6 @@ impl DirNavigator {
         self.files.get(self.index)
     }
 
-    pub fn current_index(&self) -> usize { self.index }
-    pub fn total(&self)         -> usize { self.files.len() }
-
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn rebuild(&mut self, dir: Option<&Path>) {

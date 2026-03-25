@@ -1,150 +1,169 @@
 //! Devoid Viewer — main.rs
+//!
+//! GUI layer: winit (window + events) + softbuffer (CPU pixel blit).
+//! No GPU pipeline, no widget toolkit, no font renderer.
+//! Threading: crossbeam-channel + std::thread per load; adjacent images preloaded.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod loader;
 mod nav;
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, sync::Arc};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use loader::load_image;
 use nav::DirNavigator;
+use softbuffer::Surface;
+use winit::{
+    dpi::LogicalSize,
+    event::{ElementState, Event, KeyEvent, WindowEvent},
+    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowBuilder},
+};
 
-// ── Message types ─────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
+/// Background colour (dark gray) used for the blank state and behind
+/// transparent image regions.
+const BG: u8 = 42;
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+/// Decoded, ready-to-blit image — straight RGBA8, row-major.
+#[derive(Clone, Debug)]
+struct DecodedImage {
+    pixels: Vec<u8>,
+    width:  u32,
+    height: u32,
+}
+
+impl From<loader::RawImage> for DecodedImage {
+    fn from(r: loader::RawImage) -> Self {
+        Self { pixels: r.pixels, width: r.width, height: r.height }
+    }
+}
+
+/// Whether the window should resize to match a newly opened image.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenMode { FirstImage, Navigate }
+
+/// Messages from background loader threads to the UI thread.
 #[derive(Debug)]
 enum LoadMsg {
-    Ready { path: PathBuf, image: ColorImage, is_preload: bool },
+    /// Primary load — display this image.
+    Loaded { path: PathBuf, image: DecodedImage, resize: bool },
+    /// Speculative preload — cache for instant navigation.
+    Preloaded { path: PathBuf, image: DecodedImage },
+    /// Decode failed.
     Error { path: PathBuf, msg: String },
 }
 
+
+/// Zero-size marker injected into the winit event loop by background threads
+/// to trigger a repaint after posting to the channel.
+#[derive(Debug)]
+struct WakeUp;
+
+type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
+
 // ── App state ─────────────────────────────────────────────────────────────────
 
-struct DevoidApp {
-    current_path:       Option<PathBuf>,
-    texture:            Option<TextureHandle>,
-    image_size:         Option<(u32, u32)>,
-    error_msg:          Option<String>,
+struct App {
+    current_path:  Option<PathBuf>,
+    current_image: Option<DecodedImage>,
 
-    navigator:          DirNavigator,
+    navigator:     DirNavigator,
 
-    load_tx:            Sender<LoadMsg>,
-    load_rx:            Receiver<LoadMsg>,
-    preload_cache:      HashMap<PathBuf, ColorImage>,
+    load_tx:       Sender<LoadMsg>,
+    load_rx:       Receiver<LoadMsg>,
+    loading_path:  Option<PathBuf>,
+    preload_cache: HashMap<PathBuf, DecodedImage>,
 
-    show_delete_dialog: bool,
-    loading:            bool,
-    loading_path:       Option<PathBuf>,
-
-    /// Some((w,h)) → we need to emit a resize command this frame.
-    pending_resize:     Option<(u32, u32)>,
-    /// True on the frame after a resize, when we send the centre command.
-    pending_center:     bool,
+    /// Set after a resize command; triggers centering on the next wake.
+    pending_center: bool,
 }
 
-impl DevoidApp {
-    fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
-        let (load_tx, load_rx) = bounded::<LoadMsg>(32);
-
-        let mut app = DevoidApp {
-            current_path:       None,
-            texture:            None,
-            image_size:         None,
-            error_msg:          None,
-            navigator:          DirNavigator::default(),
+impl App {
+    fn new(load_tx: Sender<LoadMsg>, load_rx: Receiver<LoadMsg>) -> Self {
+        App {
+            current_path:   None,
+            current_image:  None,
+            navigator:      DirNavigator::default(),
             load_tx,
             load_rx,
-            preload_cache:      HashMap::new(),
-            show_delete_dialog: false,
-            loading:            false,
-            loading_path:       None,
-            pending_resize:     None,
-            pending_center:      false,
-        };
-
-        if let Some(path) = initial_path {
-            app.open_image(path, true, &cc.egui_ctx);
+            loading_path:   None,
+            preload_cache:  HashMap::new(),
+            pending_center: false,
         }
-
-        app
     }
 
-    // ── Image loading ─────────────────────────────────────────────────────────
+    // ── Loading ───────────────────────────────────────────────────────────────
 
-    /// Begin loading `path`.  `resize_window` = true only for the very first image.
-    fn open_image(&mut self, path: PathBuf, resize_window: bool, ctx: &egui::Context) {
+    fn open_image(&mut self, path: PathBuf, mode: OpenMode, proxy: &Proxy) {
         if let Some(img) = self.preload_cache.remove(&path) {
-            self.apply_image(path, img, resize_window, ctx);
-            self.preload_adjacent(ctx);
+            self.apply_image(path, img, mode, proxy);
             return;
         }
 
-        self.loading      = true;
         self.loading_path = Some(path.clone());
-        self.error_msg    = None;
         self.navigator.set_current(path.clone());
 
-        let tx   = self.load_tx.clone();
-        let ctx2 = ctx.clone();
+        let tx     = self.load_tx.clone();
+        let proxy  = proxy.clone();
+        let resize = mode == OpenMode::FirstImage;
         std::thread::spawn(move || {
             let msg = match load_image(&path) {
-                Ok(img) => LoadMsg::Ready { path, image: img, is_preload: false },
-                Err(e)  => LoadMsg::Error { path, msg: e.to_string() },
+                Ok(raw) => LoadMsg::Loaded {
+                    path,
+                    image: raw.into(),
+                    resize,
+                },
+                Err(e) => LoadMsg::Error { path, msg: e.to_string() },
             };
             let _ = tx.send(msg);
-            ctx2.request_repaint();
+            let _ = proxy.send_event(WakeUp);
         });
     }
 
-    /// Upload a decoded image as a GPU texture and update all related state.
     fn apply_image(
         &mut self,
-        path: PathBuf,
-        img: ColorImage,
-        resize_window: bool,
-        ctx: &egui::Context,
-    ) {
-        let w = img.width()  as u32;
-        let h = img.height() as u32;
-
-        self.texture      = Some(ctx.load_texture(
-            path.to_string_lossy().as_ref(),
-            img,
-            TextureOptions::LINEAR,
-        ));
-        self.image_size   = Some((w, h));
-        self.current_path = Some(path.clone());
-        self.loading      = false;
-        self.loading_path = None;
-        self.error_msg    = None;
+        path:  PathBuf,
+        img:   DecodedImage,
+        mode:  OpenMode,
+        proxy: &Proxy,
+    ) -> Option<(u32, u32)> {
+        self.current_path  = Some(path.clone());
+        self.current_image = Some(img.clone());
+        self.loading_path  = None;
         self.navigator.set_current(path);
+        self.preload_adjacent(proxy);
 
-        if resize_window {
-            self.pending_resize = Some((w, h));
+        if mode == OpenMode::FirstImage {
+            Some((img.width, img.height))
+        } else {
+            None
         }
     }
 
     fn clear_image(&mut self) {
-        self.current_path = None;
-        self.texture      = None;
-        self.image_size   = None;
-        self.error_msg    = None;
+        self.current_path  = None;
+        self.current_image = None;
     }
 
-    fn preload_adjacent(&mut self, ctx: &egui::Context) {
+    fn preload_adjacent(&mut self, proxy: &Proxy) {
         for path in [self.navigator.peek_next(), self.navigator.peek_prev()]
             .into_iter()
             .flatten()
         {
             if self.preload_cache.contains_key(&path) { continue; }
-            let tx   = self.load_tx.clone();
-            let ctx2 = ctx.clone();
+            let tx    = self.load_tx.clone();
+            let proxy = proxy.clone();
             std::thread::spawn(move || {
-                if let Ok(img) = load_image(&path) {
-                    let _ = tx.send(LoadMsg::Ready { path, image: img, is_preload: true });
-                    ctx2.request_repaint();
+                if let Ok(raw) = load_image(&path) {
+                    let _ = tx.send(LoadMsg::Preloaded { path, image: raw.into() });
+                    let _ = proxy.send_event(WakeUp);
                 }
             });
         }
@@ -152,326 +171,310 @@ impl DevoidApp {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
-    fn navigate_next(&mut self, ctx: &egui::Context) {
-        if let Some(p) = self.navigator.next() { self.open_image(p, false, ctx); }
-    }
-
-    fn navigate_prev(&mut self, ctx: &egui::Context) {
-        if let Some(p) = self.navigator.prev() { self.open_image(p, false, ctx); }
+    fn navigate(&mut self, forward: bool, proxy: &Proxy) {
+        let next = if forward { self.navigator.next() } else { self.navigator.prev() };
+        if let Some(p) = next {
+            self.open_image(p, OpenMode::Navigate, proxy);
+        }
     }
 
     // ── Deletion ──────────────────────────────────────────────────────────────
 
-    fn confirm_delete(&mut self, ctx: &egui::Context) {
+    fn delete_current(&mut self, proxy: &Proxy) {
         let Some(path) = self.current_path.clone() else { return };
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 self.navigator.remove(&path);
                 self.preload_cache.clear();
                 match self.navigator.current().cloned() {
-                    Some(next) => self.open_image(next, false, ctx),
+                    Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
                     None       => self.clear_image(),
                 }
             }
-            Err(e) => self.error_msg = Some(format!("Delete failed: {e}")),
+            Err(e) => show_error_dialog(&format!("Delete failed:\n{e}")),
         }
     }
 
-    // ── Drawing helpers ───────────────────────────────────────────────────────
+    // ── Channel drain ─────────────────────────────────────────────────────────
 
-    fn draw_blank(ui: &mut egui::Ui, rect: egui::Rect) {
-        let painter = ui.painter_at(rect);
-        let cell    = 32.0_f32;
-        let cols    = (rect.width()  / cell).ceil() as i32;
-        let rows    = (rect.height() / cell).ceil() as i32;
-        let dark    = egui::Color32::from_gray(36);
-        let light   = egui::Color32::from_gray(48);
-        for row in 0..rows {
-            for col in 0..cols {
-                let color = if (row + col) % 2 == 0 { light } else { dark };
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        egui::pos2(rect.left() + col as f32 * cell,
-                                   rect.top()  + row as f32 * cell),
-                        egui::vec2(cell, cell),
-                    ),
-                    0.0, color,
-                );
-            }
-        }
-        painter.text(
-            rect.center(), egui::Align2::CENTER_CENTER,
-            "Drop an image here",
-            egui::FontId::proportional(18.0),
-            egui::Color32::from_gray(100),
-        );
-    }
-
-    /// Scale the image to fill `avail` as much as possible while preserving
-    /// aspect ratio.  Strategy: try fitting by height first; if the resulting
-    /// width still exceeds the panel, fit by width instead.  This means images
-    /// always fill the window in the dominant dimension.
-    fn draw_image(ui: &mut egui::Ui, tex: &TextureHandle, size: (u32, u32), avail: egui::Rect) {
-        let (orig_w, orig_h) = (size.0 as f32, size.1 as f32);
-        let panel_w = avail.width();
-        let panel_h = avail.height();
-
-        // Scale so the image fills the panel in both axes (fit, not crop).
-        let scale_h = panel_h / orig_h;               // height-fit scale
-        let scale_w = panel_w / orig_w;               // width-fit scale
-        let scale   = scale_h.min(scale_w);           // whichever fits both
-
-        let display = egui::vec2(orig_w * scale, orig_h * scale);
-        let offset  = egui::vec2(
-            ((panel_w - display.x) * 0.5).max(0.0),
-            ((panel_h - display.y) * 0.5).max(0.0),
-        );
-        let img_rect = egui::Rect::from_min_size(avail.min + offset, display);
-        let uv       = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-        ui.painter().image(tex.id(), img_rect, uv, egui::Color32::WHITE);
-    }
-
-    fn draw_status_bar(
-        ui:    &mut egui::Ui,
-        path:  &std::path::Path,
-        index: usize,
-        total: usize,
-        size:  (u32, u32),
-        avail: egui::Rect,
-    ) {
-        let name = path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let text = format!("{}  [{}/{}]  {}×{}", name, index + 1, total, size.0, size.1);
-        ui.painter().text(
-            egui::pos2(avail.left() + 8.0, avail.bottom() - 18.0),
-            egui::Align2::LEFT_BOTTOM,
-            text,
-            egui::FontId::proportional(12.0),
-            egui::Color32::from_gray(180),
-        );
-    }
-
-    fn draw_delete_dialog(&mut self, ctx: &egui::Context) {
-        let file_name = self.current_path.as_deref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-
-        let mut do_delete = false;
-        let mut do_cancel = false;
-
-        egui::Window::new("Delete Image?")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!("Permanently delete \"{file_name}\"?"));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() { do_delete = true; }
-                    if ui.button("Cancel").clicked() { do_cancel = true; }
-                });
-            });
-
-        if do_delete { self.show_delete_dialog = false; self.confirm_delete(ctx); }
-        if do_cancel { self.show_delete_dialog = false; }
-    }
-}
-
-// ── Input ─────────────────────────────────────────────────────────────────────
-
-#[derive(Default)]
-struct InputActions {
-    nav_next:    bool,
-    nav_prev:    bool,
-    open_delete: bool,
-    quit:        bool,
-    drop_path:   Option<PathBuf>,
-}
-
-impl DevoidApp {
-    fn read_input(&self, ctx: &egui::Context) -> InputActions {
-        let mut a = InputActions::default();
-        ctx.input(|i| {
-            use egui::Key;
-            a.nav_next    = i.key_pressed(Key::ArrowRight)
-                          || i.key_pressed(Key::ArrowDown)
-                          || i.key_pressed(Key::PageDown);
-            a.nav_prev    = i.key_pressed(Key::ArrowLeft)
-                          || i.key_pressed(Key::ArrowUp)
-                          || i.key_pressed(Key::PageUp);
-            a.open_delete = i.key_pressed(Key::Delete);
-            a.quit        = i.key_pressed(Key::Q) || i.key_pressed(Key::Escape);
-            a.drop_path   = i.raw.dropped_files.iter()
-                .find_map(|f| f.path.as_ref().filter(|p| loader::is_supported(p)).cloned());
-        });
-        a
-    }
-
-    fn handle_input(&mut self, a: InputActions, ctx: &egui::Context) {
-        if let Some(path) = a.drop_path {
-            self.open_image(path, false, ctx);
-            return;
-        }
-        if a.quit {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
-        if !self.show_delete_dialog {
-            if a.nav_next { self.navigate_next(ctx); }
-            if a.nav_prev { self.navigate_prev(ctx); }
-        }
-        if a.open_delete && self.current_path.is_some() {
-            self.show_delete_dialog = true;
-        }
-    }
-
-    fn process_load_messages(&mut self, ctx: &egui::Context) {
+    /// Returns Some((w, h)) if the first image was just loaded and the window
+    /// should be resized, None otherwise.
+    fn process_messages(&mut self, proxy: &Proxy) -> Option<(u32, u32)> {
+        let mut resize_to = None;
         while let Ok(msg) = self.load_rx.try_recv() {
             match msg {
-                LoadMsg::Ready { path, image, is_preload: true } => {
+                LoadMsg::Preloaded { path, image } => {
                     self.preload_cache.insert(path, image);
                 }
-                LoadMsg::Ready { path, image, is_preload: false } => {
+                LoadMsg::Loaded { path, image, resize } => {
                     if self.loading_path.as_deref() == Some(path.as_path()) {
-                        let is_first = self.texture.is_none();
-                        self.apply_image(path, image, is_first, ctx);
-                        self.preload_adjacent(ctx);
+                        let mode = if resize { OpenMode::FirstImage } else { OpenMode::Navigate };
+                        if let Some(dims) = self.apply_image(path, image, mode, proxy) {
+                            resize_to = Some(dims);
+                        }
                     }
                 }
                 LoadMsg::Error { path, msg } => {
                     if self.loading_path.as_deref() == Some(path.as_path()) {
-                        self.loading      = false;
                         self.loading_path = None;
-                        self.error_msg    = Some(msg);
+                        show_error_dialog(&format!("Failed to load image:\n{msg}"));
                     }
                 }
             }
         }
+        resize_to
     }
 }
 
-// ── eframe::App ───────────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
-impl eframe::App for DevoidApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.process_load_messages(ctx);
+/// Write pixels into `buf` (softbuffer's 0x00RRGGBB u32 format).
+/// Scales the image to fill the window while preserving aspect ratio.
+/// Background and transparent regions use BG gray.
+fn render(buf: &mut [u32], win_w: u32, win_h: u32, img: Option<&DecodedImage>) {
+    let bg = pack_rgb(BG, BG, BG);
 
-        // Frame N: send the resize; frame N+1: centre once the new size has landed.
-        if let Some((img_w, img_h)) = self.pending_resize.take() {
-            let (max_w, max_h) = monitor_work_area(ctx);
-            // Reserve room for the taskbar (bottom) and title bar (top) so the
-            // window chrome is always reachable: 90% of width, 85% of height.
-            let usable_w = max_w * 0.90;
-            let usable_h = max_h * 0.85;
-            let scale = (usable_w / img_w as f32).min(usable_h / img_h as f32).min(1.0);
-            let win_w = (img_w as f32 * scale).floor();
-            let win_h = (img_h as f32 * scale).floor();
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(win_w, win_h)));
-            self.pending_center = true;   // centre on the next frame
-            ctx.request_repaint();
-        } else if self.pending_center {
-            // The resize has been applied; now we can centre accurately.
-            if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
-                ctx.send_viewport_cmd(cmd);
-            }
-            self.pending_center = false;
+    let Some(img) = img else {
+        buf.fill(bg);
+        return;
+    };
+
+    let scale = (win_h as f32 / img.height as f32)
+        .min(win_w  as f32 / img.width  as f32);
+    let dst_w = (img.width  as f32 * scale) as u32;
+    let dst_h = (img.height as f32 * scale) as u32;
+    let off_x = (win_w.saturating_sub(dst_w)) / 2;
+    let off_y = (win_h.saturating_sub(dst_h)) / 2;
+
+    for dy in 0..win_h {
+        for dx in 0..win_w {
+            let px = if dx >= off_x && dx < off_x + dst_w
+                     && dy >= off_y && dy < off_y + dst_h
+            {
+                let sx = ((dx - off_x) as f32 / scale) as u32;
+                let sy = ((dy - off_y) as f32 / scale) as u32;
+                let i  = ((sy.min(img.height - 1) * img.width
+                           + sx.min(img.width  - 1)) * 4) as usize;
+                let [r, g, b, a] = [
+                    img.pixels[i], img.pixels[i+1],
+                    img.pixels[i+2], img.pixels[i+3],
+                ];
+                // Alpha-composite over the background colour.
+                let af = a as u32;
+                pack_rgb(
+                    ((r as u32 * af + BG as u32 * (255 - af)) / 255) as u8,
+                    ((g as u32 * af + BG as u32 * (255 - af)) / 255) as u8,
+                    ((b as u32 * af + BG as u32 * (255 - af)) / 255) as u8,
+                )
+            } else {
+                bg
+            };
+            buf[(dy * win_w + dx) as usize] = px;
         }
+    }
+}
 
-        let input = self.read_input(ctx);
-        self.handle_input(input, ctx);
+#[inline]
+fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | b as u32
+}
 
-        if self.show_delete_dialog {
-            self.draw_delete_dialog(ctx);
+// ── Native dialogs ────────────────────────────────────────────────────────────
+
+/// Shows a Yes/No confirmation dialog. Returns true if the user clicked Yes.
+fn confirm_delete_dialog(filename: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONWARNING, MB_YESNO, IDYES,
+        };
+        let text: Vec<u16> = OsStr::new(&format!("Permanently delete\n\n{filename}?"))
+            .encode_wide().chain(Some(0)).collect();
+        let cap: Vec<u16> = OsStr::new("Delete Image")
+            .encode_wide().chain(Some(0)).collect();
+        unsafe {
+            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES
         }
+    }
+    #[cfg(not(windows))]
+    { true }
+}
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::from_gray(24)))
-            .show(ctx, |ui| {
-                let avail = ui.available_rect_before_wrap();
+fn show_error_dialog(msg: &str) {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let text: Vec<u16> = OsStr::new(msg).encode_wide().chain(Some(0)).collect();
+        let cap:  Vec<u16> = OsStr::new("Devoid Viewer").encode_wide().chain(Some(0)).collect();
+        unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK); }
+    }
+    #[cfg(not(windows))]
+    { eprintln!("Error: {msg}"); }
+}
 
-                if self.loading {
-                    ui.centered_and_justified(|ui| { ui.spinner(); });
-                    return;
-                }
+// ── Window sizing ─────────────────────────────────────────────────────────────
 
-                if let Some(err) = self.error_msg.as_deref() {
-                    let err = err.to_owned();
-                    ui.centered_and_justified(|ui| {
-                        ui.colored_label(egui::Color32::from_rgb(220, 80, 80), &err);
-                    });
-                    return;
-                }
+/// Returns logical usable dimensions: 90% of monitor width, 85% of height.
+/// Falls back to 1152×648 if the monitor cannot be queried.
+fn monitor_usable(window: &Window) -> (f64, f64) {
+    window.current_monitor()
+        .or_else(|| window.available_monitors().next())
+        .map(|m| {
+            let sf = m.scale_factor();
+            let s  = m.size();
+            (s.width  as f64 / sf * 0.90,
+             s.height as f64 / sf * 0.85)
+        })
+        .unwrap_or((1152.0, 648.0))
+}
 
-                if let (Some(tex), Some(size), Some(path)) = (
-                    &self.texture,
-                    self.image_size,
-                    self.current_path.as_deref(),
-                ) {
-                    Self::draw_image(ui, tex, size, avail);
-                    Self::draw_status_bar(
-                        ui, path,
-                        self.navigator.current_index(),
-                        self.navigator.total(),
-                        size, avail,
-                    );
-                } else {
-                    Self::draw_blank(ui, avail);
-                }
-            });
+/// Clamp (w, h) to the monitor's usable area, preserving aspect ratio.
+fn clamp_to_monitor(w: u32, h: u32, window: &Window) -> (u32, u32) {
+    let (max_w, max_h) = monitor_usable(window);
+    let scale = (max_w / w as f64).min(max_h / h as f64).min(1.0);
+    ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
+}
 
-        if self.loading {
-            ctx.request_repaint();
-        }
+/// Centre the window on its monitor, keeping the title bar reachable.
+fn center_window(window: &Window) {
+    let monitor = window.current_monitor()
+        .or_else(|| window.available_monitors().next());
+    if let Some(mon) = monitor {
+        let mp  = mon.position();
+        let ms  = mon.size();
+        let ws  = window.outer_size();
+        let sf  = mon.scale_factor();
+        let x   = mp.x + (ms.width  as i32 - ws.width  as i32) / 2;
+        let y   = mp.y + (ms.height as i32 - ws.height as i32) / 2;
+        let y   = y.max(mp.y + (30.0 * sf) as i32); // never above titlebar height
+        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
     }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-fn main() -> eframe::Result<()> {
-    // Canonicalize the path so "Open With" short/relative paths resolve correctly.
+fn main() {
     let initial_path = std::env::args().nth(1)
         .map(PathBuf::from)
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
 
-    // Best-effort size hint for the initial window; clamping to the work area
-    // happens inside `update` once egui knows the monitor geometry.
-    let (w, h) = initial_path.as_deref()
+    let (load_tx, load_rx) = bounded::<LoadMsg>(32);
+
+    let event_loop: EventLoop<WakeUp> = EventLoopBuilder::with_user_event()
+        .build()
+        .expect("Failed to create event loop");
+    let proxy = event_loop.create_proxy();
+
+    let (init_w, init_h) = initial_path.as_deref()
         .and_then(image_size_hint)
         .unwrap_or((800, 600));
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([w as f32, h as f32])
-            .with_min_inner_size([120.0, 80.0])
+    let window = Arc::new(
+        WindowBuilder::new()
             .with_title("Devoid Viewer")
-            .with_drag_and_drop(true),
-        centered: true,
-        ..Default::default()
-    };
+            .with_inner_size(LogicalSize::new(init_w, init_h))
+            .with_min_inner_size(LogicalSize::new(120u32, 80u32))
+            .build(&event_loop)
+            .expect("Failed to create window"),
+    );
 
-    eframe::run_native(
-        "Devoid Viewer",
-        native_options,
-        Box::new(move |cc| Box::new(DevoidApp::new(cc, initial_path)) as Box<dyn eframe::App>),
-    )
+    let ctx     = softbuffer::Context::new(window.clone()).expect("softbuffer context");
+    let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
+    let mut app = App::new(load_tx, load_rx);
+
+    if let Some(path) = initial_path {
+        app.open_image(path, OpenMode::FirstImage, &proxy);
+    }
+
+    event_loop.run(move |event, elwt| {
+        elwt.set_control_flow(ControlFlow::Wait);
+
+        match event {
+            Event::UserEvent(WakeUp) => {
+                if let Some((iw, ih)) = app.process_messages(&proxy) {
+                    let (cw, ch) = clamp_to_monitor(iw, ih, &window);
+                    let _ = window.request_inner_size(LogicalSize::new(cw, ch));
+                    app.pending_center = true;
+                } else if app.pending_center {
+                    center_window(&window);
+                    app.pending_center = false;
+                }
+                window.request_redraw();
+            }
+
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => elwt.exit(),
+
+                WindowEvent::Resized(_) => window.request_redraw(),
+
+                WindowEvent::DroppedFile(path) => {
+                    if loader::is_supported(&path) {
+                        let path = std::fs::canonicalize(&path).unwrap_or(path);
+                        app.open_image(path, OpenMode::Navigate, &proxy);
+                        window.request_redraw();
+                    }
+                }
+
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        physical_key: PhysicalKey::Code(code),
+                        state: ElementState::Pressed, ..
+                    }, ..
+                } => match code {
+                    KeyCode::ArrowRight | KeyCode::ArrowDown | KeyCode::PageDown => {
+                        app.navigate(true, &proxy);
+                        window.request_redraw();
+                    }
+                    KeyCode::ArrowLeft | KeyCode::ArrowUp | KeyCode::PageUp => {
+                        app.navigate(false, &proxy);
+                        window.request_redraw();
+                    }
+                    KeyCode::Delete => {
+                        if app.current_path.is_some() {
+                            let fname = app.current_path.as_deref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            if confirm_delete_dialog(&fname) {
+                                app.delete_current(&proxy);
+                                window.request_redraw();
+                            }
+                        }
+                    }
+                    KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
+                    _ => {}
+                },
+
+                WindowEvent::RedrawRequested => {
+                    let size  = window.inner_size();
+                    let win_w = size.width;
+                    let win_h = size.height;
+                    if win_w == 0 || win_h == 0 { return; }
+
+                    surface
+                        .resize(NonZeroU32::new(win_w).unwrap(),
+                                NonZeroU32::new(win_h).unwrap())
+                        .expect("surface resize");
+                    let mut buf = surface.buffer_mut().expect("surface buffer");
+                    render(&mut buf, win_w, win_h, app.current_image.as_ref());
+                    buf.present().expect("present");
+                }
+
+                _ => {}
+            },
+
+            _ => {}
+        }
+    }).expect("event loop error");
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/// Return the usable screen dimensions (work area, excluding taskbar) in
-/// logical pixels.  Falls back to a conservative 1280×720 if unavailable.
-fn monitor_work_area(ctx: &egui::Context) -> (f32, f32) {
-    ctx.input(|i| {
-        i.viewport()
-            .monitor_size
-            .map(|s| (s.x, s.y))
-            .unwrap_or((1280.0, 720.0))
-    })
-}
-
-/// Fast image-dimension probe — reads only the file header, no full decode.
+/// Read only the file header for dimensions — avoids a full decode.
 fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
     let ext = path.extension()?.to_ascii_lowercase();
 

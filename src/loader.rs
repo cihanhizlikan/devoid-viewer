@@ -1,16 +1,24 @@
 //! loader.rs — Image decoding for all supported formats.
 //!
-//! | Format               | Crate                         |
-//! |----------------------|-------------------------------|
-//! | BMP/PNG/JPEG/GIF/    |                               |
-//! |   WebP/TIFF/ICO      | `image`                       |
-//! | JPEG XL (.jxl)       | `jxl-oxide`                   |
-//! | SVG                  | `resvg` + `usvg` + `tiny-skia`|
+//! Returns raw RGBA8 pixel data (Vec<u8>) + dimensions.
+//!
+//! | Format               | Crate                          |
+//! |----------------------|--------------------------------|
+//! | BMP/PNG/JPEG/GIF/    |                                |
+//! |   WebP/TIFF/ICO      | `image`                        |
+//! | JPEG XL (.jxl)       | `jxl-oxide`                    |
+//! | SVG                  | `resvg` + `usvg` + `tiny-skia` |
 
 use std::path::Path;
-use eframe::egui::ColorImage;
 
-pub type LoadResult = Result<ColorImage, Box<dyn std::error::Error + Send + Sync>>;
+pub type LoadResult = Result<RawImage, Box<dyn std::error::Error + Send + Sync>>;
+
+/// Decoded image as straight RGBA8 bytes, row-major.
+pub struct RawImage {
+    pub pixels: Vec<u8>,
+    pub width:  u32,
+    pub height: u32,
+}
 
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "bmp", "png", "jpg", "jpeg", "gif", "webp",
@@ -23,7 +31,7 @@ pub fn is_supported(path: &Path) -> bool {
         .is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// Decode any supported image file to an egui `ColorImage` (straight RGBA8).
+/// Decode any supported image file to straight RGBA8.
 pub fn load_image(path: &Path) -> LoadResult {
     match path
         .extension()
@@ -44,22 +52,19 @@ fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-fn rgba_from_image(img: image::DynamicImage) -> ColorImage {
+fn raw_from_dynamic(img: image::DynamicImage) -> RawImage {
     let rgba      = img.into_rgba8();
     let (w, h)    = rgba.dimensions();
-    ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba.into_raw())
+    RawImage { pixels: rgba.into_raw(), width: w, height: h }
 }
 
-// ── Standard formats via `image` crate ───────────────────────────────────────
+// ── Standard formats ─────────────────────────────────────────────────────────
 
 fn load_via_image_crate(path: &Path) -> LoadResult {
-    Ok(rgba_from_image(image::open(path)?))
+    Ok(raw_from_dynamic(image::open(path)?))
 }
 
-// ── JPEG XL via jxl-oxide 0.10 ───────────────────────────────────────────────
-//
-// jxl-oxide renders frames to planar f32 samples.  We read the stream into an
-// interleaved buffer then expand to RGBA u8.
+// ── JPEG XL ───────────────────────────────────────────────────────────────────
 
 fn load_jxl(path: &Path) -> LoadResult {
     use jxl_oxide::JxlImage;
@@ -87,40 +92,31 @@ fn load_jxl(path: &Path) -> LoadResult {
         match channels {
             1 => {
                 let v = f32_to_u8(samples[s]);
-                rgba[d]     = v;
-                rgba[d + 1] = v;
-                rgba[d + 2] = v;
-                // alpha stays 255
+                rgba[d] = v; rgba[d+1] = v; rgba[d+2] = v;
             }
             2 => {
                 let v = f32_to_u8(samples[s]);
-                rgba[d]     = v;
-                rgba[d + 1] = v;
-                rgba[d + 2] = v;
-                rgba[d + 3] = f32_to_u8(samples[s + 1]);
+                rgba[d] = v; rgba[d+1] = v; rgba[d+2] = v;
+                rgba[d+3] = f32_to_u8(samples[s+1]);
             }
             3 => {
-                rgba[d]     = f32_to_u8(samples[s]);
-                rgba[d + 1] = f32_to_u8(samples[s + 1]);
-                rgba[d + 2] = f32_to_u8(samples[s + 2]);
-                // alpha stays 255
+                rgba[d]   = f32_to_u8(samples[s]);
+                rgba[d+1] = f32_to_u8(samples[s+1]);
+                rgba[d+2] = f32_to_u8(samples[s+2]);
             }
             _ => {
-                rgba[d]     = f32_to_u8(samples[s]);
-                rgba[d + 1] = f32_to_u8(samples[s + 1]);
-                rgba[d + 2] = f32_to_u8(samples[s + 2]);
-                rgba[d + 3] = f32_to_u8(samples[s + 3]);
+                rgba[d]   = f32_to_u8(samples[s]);
+                rgba[d+1] = f32_to_u8(samples[s+1]);
+                rgba[d+2] = f32_to_u8(samples[s+2]);
+                rgba[d+3] = f32_to_u8(samples[s+3]);
             }
         }
     }
 
-    Ok(ColorImage::from_rgba_unmultiplied([width, height], &rgba))
+    Ok(RawImage { pixels: rgba, width: width as u32, height: height as u32 })
 }
 
-// ── SVG via resvg + usvg + tiny-skia ─────────────────────────────────────────
-//
-// tiny-skia uses premultiplied RGBA; egui expects straight alpha, so we
-// unpremultiply before handing the buffer over.
+// ── SVG ───────────────────────────────────────────────────────────────────────
 
 fn load_svg(path: &Path) -> LoadResult {
     let data = std::fs::read(path)?;
@@ -139,7 +135,8 @@ fn load_svg(path: &Path) -> LoadResult {
 
     resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
 
-    let raw: Vec<u8> = pixmap.pixels().iter().flat_map(|p| {
+    // Unpremultiply alpha: tiny-skia → straight RGBA for our renderer
+    let pixels: Vec<u8> = pixmap.pixels().iter().flat_map(|p| {
         let a = p.alpha();
         if a == 0 {
             [0u8, 0, 0, 0]
@@ -154,8 +151,5 @@ fn load_svg(path: &Path) -> LoadResult {
         }
     }).collect();
 
-    Ok(ColorImage::from_rgba_unmultiplied(
-        [width as usize, height as usize],
-        &raw,
-    ))
+    Ok(RawImage { pixels, width, height })
 }
