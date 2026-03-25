@@ -28,11 +28,12 @@ tiny-skia = "0.11"
 # ── Threading ─────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 
-# ── Windows API (delete dialog) ───────────────────────────────
+# ── Windows API ───────────────────────────────────────────────
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
 ] }
 
 [build-dependencies]
