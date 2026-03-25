@@ -1,7 +1,7 @@
 //! Devoid Viewer — main.rs
 //!
 //! GUI: winit + softbuffer (CPU pixel blit, no GPU pipeline).
-//! Features: animated GIF, zoom/pan, bilinear scaling, async deletion,
+//! Features: animated GIF, pan, async deletion,
 //!           exact work-area clamping on Windows.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -31,7 +31,8 @@ use winit::{
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const BG:        u8  = 42;    // background grey level
+/// Background grey level — blank state and transparent image regions.
+const BG: u8 = 42;
 
 // ── Message & event types ─────────────────────────────────────────────────────
 
@@ -52,12 +53,10 @@ type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
 
 // ── View state (everything the renderer needs) ────────────────────────────────
 
-/// The subset of state consumed by `render()`.  Keeps the function signature
-/// to two arguments instead of seven.
+/// Snapshot passed to `render()` each frame.
 struct View<'a> {
     image: &'a DecodedImage,
     frame: usize,
-    zoom:  f32,
     pan:   (f32, f32),
 }
 
@@ -76,8 +75,7 @@ struct App {
     frame_index:   usize,
     next_frame_at: Option<Instant>,
 
-    // Zoom & pan
-    zoom:       f32,                  // 1.0 = fit-to-window
+    // Pan
     pan:        (f32, f32),           // screen-pixel offset from centre
     drag_start: Option<(f32, f32)>,   // cursor pos when left-button went down
     pan_origin: (f32, f32),           // pan value at drag start
@@ -103,7 +101,6 @@ impl App {
             current_image:  None,
             frame_index:    0,
             next_frame_at:  None,
-            zoom:           1.0,
             pan:            (0.0, 0.0),
             drag_start:     None,
             pan_origin:     (0.0, 0.0),
@@ -122,7 +119,6 @@ impl App {
         self.current_image.as_ref().map(|image| View {
             image,
             frame: self.frame_index,
-            zoom:  self.zoom,
             pan:   self.pan,
         })
     }
@@ -150,8 +146,8 @@ impl App {
         });
     }
 
-    /// Store the image, reset view, start animation. Returns Some((w,h)) when
-    /// the caller should resize the window.
+    /// Store the image, reset pan, start animation.
+    /// Returns Some((w,h)) when the caller should resize the window.
     fn apply_image(
         &mut self,
         path:  PathBuf,
@@ -165,7 +161,7 @@ impl App {
         self.current_image = Some(img);
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
-        self.reset_view();
+        self.reset_pan();
         self.navigator.set_current(path);
         self.preload_adjacent(proxy);
         self.reset_animation();
@@ -176,9 +172,8 @@ impl App {
     fn clear_image(&mut self) {
         self.current_image = None;
         self.current_path  = None;
-        self.frame_index   = 0;
-        self.next_frame_at = None;
-        self.reset_view();
+        self.reset_pan();
+        self.reset_animation();
     }
 
     fn preload_adjacent(&mut self, proxy: &Proxy) {
@@ -200,7 +195,7 @@ impl App {
     // ── Animation ─────────────────────────────────────────────────────────────
 
     fn reset_animation(&mut self) {
-        self.frame_index = 0;
+        self.frame_index   = 0;
         self.next_frame_at = self.current_image.as_ref()
             .filter(|i| i.is_animated())
             .map(|i| Instant::now() + Duration::from_millis(i.frame(0).delay_ms as u64));
@@ -223,10 +218,9 @@ impl App {
         }
     }
 
-    // ── Zoom & pan ────────────────────────────────────────────────────────────
+    // ── Pan ───────────────────────────────────────────────────────────────────
 
-    fn reset_view(&mut self) {
-        self.zoom       = 1.0;
+    fn reset_pan(&mut self) {
         self.pan        = (0.0, 0.0);
         self.drag_start = None;
     }
@@ -236,6 +230,7 @@ impl App {
         self.pan_origin = self.pan;
     }
 
+    /// Returns true if a drag is active (caller should request redraw).
     fn update_drag(&mut self, cursor: (f32, f32)) -> bool {
         if let Some(start) = self.drag_start {
             self.pan = (
@@ -288,8 +283,8 @@ impl App {
 
     // ── Message drain ─────────────────────────────────────────────────────────
 
-    /// Drains the message channel. Returns Some((w,h)) when the window should
-    /// be resized for the first image.
+    /// Drains the message channel.
+    /// Returns Some((w,h)) when the window should be resized for the first image.
     fn drain_messages(&mut self, proxy: &Proxy) -> Option<(u32, u32)> {
         let mut resize_to = None;
         while let Ok(msg) = self.msg_rx.try_recv() {
@@ -322,40 +317,19 @@ impl App {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-/// The fit-to-window base scale (zoom=1.0 corresponds to this).
+/// Fit-to-window scale: the largest uniform scale that fits the image in the panel.
 #[inline]
 fn fit_scale(img_w: u32, img_h: u32, win_w: f32, win_h: f32) -> f32 {
     (win_h / img_h as f32).min(win_w / img_w as f32)
 }
 
-/// Linear interpolation between two u8 values.
+/// Nearest-neighbour sample from an RGBA8 pixel buffer.
 #[inline]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round() as u8
-}
-
-/// Bilinear sample at (sx, sy) from an RGBA8 pixel buffer.
-#[inline]
-fn bilinear(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
-    let x0 = (sx.floor() as i32).clamp(0, w as i32 - 1) as u32;
-    let y0 = (sy.floor() as i32).clamp(0, h as i32 - 1) as u32;
-    let x1 = (x0 + 1).min(w - 1);
-    let y1 = (y0 + 1).min(h - 1);
-    let fx  = sx.fract();
-    let fy  = sy.fract();
-
-    let idx = |x: u32, y: u32| (y * w + x) as usize * 4;
-    let (i00, i10, i01, i11) = (idx(x0,y0), idx(x1,y0), idx(x0,y1), idx(x1,y1));
-
-    let mut out = [0u8; 4];
-    for c in 0..4 {
-        out[c] = lerp_u8(
-            lerp_u8(pixels[i00+c], pixels[i10+c], fx),
-            lerp_u8(pixels[i01+c], pixels[i11+c], fx),
-            fy,
-        );
-    }
-    out
+fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
+    let x = (sx as u32).min(w - 1);
+    let y = (sy as u32).min(h - 1);
+    let i = (y * w + x) as usize * 4;
+    [pixels[i], pixels[i+1], pixels[i+2], pixels[i+3]]
 }
 
 /// Alpha-composite a straight-RGBA pixel over the background colour.
@@ -374,25 +348,13 @@ fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
 
-/// Nearest-neighbour sample — fast, used at fit-to-window scale.
-#[inline]
-fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
-    let x = (sx as u32).min(w - 1);
-    let y = (sy as u32).min(h - 1);
-    let i = (y * w + x) as usize * 4;
-    [pixels[i], pixels[i+1], pixels[i+2], pixels[i+3]]
-}
-
 /// Write pixels into `buf` (softbuffer 0x00RRGGBB format).
-/// Uses nearest-neighbour at fit-to-window (zoom == 1.0), bilinear when zoomed.
 fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
     let bg = pack_rgb(BG, BG, BG);
 
     let Some(v) = view else { buf.fill(bg); return; };
 
-    let scale = fit_scale(v.image.width, v.image.height, win_w as f32, win_h as f32)
-        * v.zoom;
-
+    let scale = fit_scale(v.image.width, v.image.height, win_w as f32, win_h as f32);
     let dst_w = (v.image.width  as f32 * scale) as i32;
     let dst_h = (v.image.height as f32 * scale) as i32;
     let off_x = ((win_w as f32 - dst_w as f32) / 2.0 + v.pan.0) as i32;
@@ -400,9 +362,6 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 
     let pixels   = &v.image.frame(v.frame).pixels;
     let (iw, ih) = (v.image.width, v.image.height);
-    // Use bilinear only when zoomed; nearest-neighbour is indistinguishable
-    // at fit-to-window scale and ~4× faster.
-    let use_bilinear = (v.zoom - 1.0).abs() > 0.01;
 
     for dy in 0..win_h as i32 {
         for dx in 0..win_w as i32 {
@@ -411,11 +370,7 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
             {
                 let sx = (dx - off_x) as f32 / scale;
                 let sy = (dy - off_y) as f32 / scale;
-                let [r, g, b, a] = if use_bilinear {
-                    bilinear(pixels, iw, ih, sx, sy)
-                } else {
-                    nearest(pixels, iw, ih, sx, sy)
-                };
+                let [r, g, b, a] = nearest(pixels, iw, ih, sx, sy);
                 composite(r, g, b, a)
             } else {
                 bg
@@ -523,9 +478,8 @@ fn main() {
         .map(PathBuf::from)
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
 
-    // Decode the first image synchronously before the event loop starts.
-    // This means the window is created at the right size and the first
-    // RedrawRequested already has pixels to paint — no gray flash, no delay.
+    // Decode the first image synchronously so the window opens showing the
+    // correct content — no blank flash, no async round-trip for startup.
     let initial_image: Option<DecodedImage> = initial_path.as_deref()
         .and_then(|p| load_image(p).ok());
 
@@ -547,7 +501,7 @@ fn main() {
             .build(&event_loop).expect("window"),
     );
 
-    // Clamp window to work area and centre before the event loop begins.
+    // Clamp to work area and centre before the event loop begins.
     if initial_image.is_some() {
         let (cw, ch) = clamp_to_work_area(init_w, init_h, &window);
         let _ = window.request_inner_size(LogicalSize::new(cw, ch));
@@ -557,24 +511,20 @@ fn main() {
     let ctx         = softbuffer::Context::new(window.clone()).expect("softbuffer context");
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
     let mut app     = App::new(msg_tx, msg_rx);
-    let mut cursor      = (0.0f32, 0.0f32);
-    let mut dirty       = true;
-    let mut first_paint = true;  // show window after first successful present
+    let mut cursor  = (0.0f32, 0.0f32);
+    let mut dirty   = true;
 
-    // Apply the pre-decoded image directly — no thread, no channel round-trip.
     if let (Some(path), Some(img)) = (initial_path, initial_image) {
         app.apply_image(path, img, OpenMode::Navigate, &proxy);
     }
 
-    // Helper: mark dirty and request a redraw.
-    // Called via a plain closure in the event handlers below.
     let mark_dirty = |dirty: &mut bool, window: &Window| {
         *dirty = true;
         window.request_redraw();
     };
 
-    // Queue a redraw immediately so the first frame (image or blank gray)
-    // is painted as soon as the event loop starts, before the user sees anything.
+    // Queue a redraw so the first frame is painted on the very first
+    // event loop iteration, minimising the gap before content is visible.
     window.request_redraw();
 
     event_loop.run(move |event, elwt| {
@@ -625,7 +575,7 @@ fn main() {
                     button: MouseButton::Middle,
                     state: ElementState::Pressed, ..
                 } => {
-                    app.reset_view();
+                    app.reset_pan();
                     mark_dirty(&mut dirty, &window);
                 }
 
@@ -661,7 +611,7 @@ fn main() {
                         }
                     }
                     KeyCode::Backspace | KeyCode::Home => {
-                        app.reset_view();
+                        app.reset_pan();
                         mark_dirty(&mut dirty, &window);
                     }
                     KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
@@ -684,10 +634,6 @@ fn main() {
                     let mut buf = surface.buffer_mut().expect("surface buffer");
                     render(&mut buf, win_w, win_h, app.view());
                     buf.present().expect("present");
-                    if first_paint {
-                        first_paint = false;
-                        window.set_visible(true);
-                    }
                 }
 
                 _ => {}
@@ -697,4 +643,3 @@ fn main() {
         }
     }).expect("event loop error");
 }
-
