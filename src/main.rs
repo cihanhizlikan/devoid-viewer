@@ -567,24 +567,6 @@ fn main() {
             .build(&event_loop).expect("window"),
     );
 
-    // Replace the default white WNDCLASS background brush with NULL_BRUSH so
-    // Windows paints nothing before our first softbuffer present.
-    // This eliminates the white flash on startup without affecting rendering.
-    #[cfg(windows)]
-    unsafe {
-        use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
-        use windows_sys::Win32::Foundation::HWND;
-        use windows_sys::Win32::Graphics::Gdi::{GetStockObject, NULL_BRUSH};
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetClassLongPtrW, GCLP_HBRBACKGROUND,
-        };
-        if let RawWindowHandle::Win32(h) = window.raw_window_handle() {
-            let hwnd = h.hwnd as HWND;
-            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND,
-                             GetStockObject(NULL_BRUSH as i32) as _);
-        }
-    }
-
     // Clamp window to work area and centre before the event loop begins.
     if initial_image.is_some() {
         let (cw, ch) = clamp_to_work_area(init_w, init_h, &window);
@@ -611,6 +593,10 @@ fn main() {
         window.request_redraw();
     };
 
+    // Queue a redraw immediately so the first frame (image or blank gray)
+    // is painted as soon as the event loop starts, before the user sees anything.
+    window.request_redraw();
+
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(match app.next_frame_at {
             Some(t) => ControlFlow::WaitUntil(t),
@@ -631,12 +617,6 @@ fn main() {
             }
 
             Event::NewEvents(_) => {
-                // On the very first iteration, request a redraw so the blank
-                // gray state is painted and the window becomes visible even
-                // when started without an image argument.
-                if first_paint {
-                    window.request_redraw();
-                }
                 if app.tick_animation() {
                     mark_dirty(&mut dirty, &window);
                 }
