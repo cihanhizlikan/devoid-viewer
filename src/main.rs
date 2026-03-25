@@ -359,7 +359,11 @@ impl eframe::App for DevoidApp {
         // the monitor's available work area so nothing goes off-screen.
         if let Some((img_w, img_h)) = self.pending_resize.take() {
             let (max_w, max_h) = monitor_work_area(ctx);
-            let scale = (max_w / img_w as f32).min(max_h / img_h as f32).min(1.0);
+            // Reserve room for the taskbar (bottom) and title bar (top) so the
+            // window chrome is always reachable: 90% of width, 85% of height.
+            let usable_w = max_w * 0.90;
+            let usable_h = max_h * 0.85;
+            let scale = (usable_w / img_w as f32).min(usable_h / img_h as f32).min(1.0);
             let win_w = (img_w as f32 * scale).floor();
             let win_h = (img_h as f32 * scale).floor();
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(win_w, win_h)));
