@@ -23,7 +23,7 @@ use nav::DirNavigator;
 use softbuffer::Surface;
 use winit::{
     dpi::LogicalSize,
-    event::{ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
+    event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
@@ -32,9 +32,6 @@ use winit::{
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const BG:        u8  = 42;    // background grey level
-const ZOOM_STEP: f32 = 0.10;  // zoom change per scroll tick (10%)
-const ZOOM_MIN:  f32 = 0.05;
-const ZOOM_MAX:  f32 = 32.0;
 
 // ── Message & event types ─────────────────────────────────────────────────────
 
@@ -232,23 +229,6 @@ impl App {
         self.zoom       = 1.0;
         self.pan        = (0.0, 0.0);
         self.drag_start = None;
-    }
-
-    /// Scale towards/away from `cursor` (logical pixels from window top-left).
-    fn zoom_at(&mut self, delta: f32, cursor: (f32, f32), win: (f32, f32)) {
-        let Some(img) = &self.current_image else { return };
-
-        let fit       = fit_scale(img.width, img.height, win.0, win.1);
-        let old_scale = fit * self.zoom;
-        let new_zoom  = (self.zoom * (1.0 + delta)).clamp(ZOOM_MIN, ZOOM_MAX);
-        let new_scale = fit * new_zoom;
-
-        // Keep the image pixel under the cursor fixed during zoom.
-        let cx = cursor.0 - win.0 / 2.0;
-        let cy = cursor.1 - win.1 / 2.0;
-        self.pan.0 += cx * (1.0 - new_scale / old_scale);
-        self.pan.1 += cy * (1.0 - new_scale / old_scale);
-        self.zoom = new_zoom;
     }
 
     fn start_drag(&mut self, cursor: (f32, f32)) {
@@ -630,19 +610,6 @@ fn main() {
                 WindowEvent::CursorMoved { position, .. } => {
                     cursor = (position.x as f32, position.y as f32);
                     if app.update_drag(cursor) {
-                        mark_dirty(&mut dirty, &window);
-                    }
-                }
-
-                WindowEvent::MouseWheel { delta, .. } => {
-                    let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(p)   => p.y as f32 / 40.0,
-                    };
-                    if lines != 0.0 {
-                        let s = window.inner_size();
-                        app.zoom_at(lines * ZOOM_STEP, cursor,
-                                    (s.width as f32, s.height as f32));
                         mark_dirty(&mut dirty, &window);
                     }
                 }

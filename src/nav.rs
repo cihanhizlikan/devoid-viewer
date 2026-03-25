@@ -37,16 +37,16 @@ impl DirNavigator {
             });
     }
 
-    /// Advance forward (wraps). Returns `None` if the list is empty.
+    /// Advance forward (wraps). Returns `None` if fewer than 2 images exist.
     pub fn next(&mut self) -> Option<PathBuf> {
-        if self.files.is_empty() { return None; }
+        if self.files.len() < 2 { return None; }
         self.index = (self.index + 1) % self.files.len();
         Some(self.files[self.index].clone())
     }
 
-    /// Go back (wraps). Returns `None` if the list is empty.
+    /// Go back (wraps). Returns `None` if fewer than 2 images exist.
     pub fn prev(&mut self) -> Option<PathBuf> {
-        if self.files.is_empty() { return None; }
+        if self.files.len() < 2 { return None; }
         self.index = self.index.checked_sub(1).unwrap_or(self.files.len() - 1);
         Some(self.files[self.index].clone())
     }
