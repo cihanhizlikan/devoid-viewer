@@ -512,16 +512,10 @@ fn main() {
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
     let mut app     = App::new(msg_tx, msg_rx);
     let mut cursor  = (0.0f32, 0.0f32);
-    let mut dirty   = true;
 
     if let (Some(path), Some(img)) = (initial_path, initial_image) {
         app.apply_image(path, img, OpenMode::Navigate, &proxy);
     }
-
-    let mark_dirty = |dirty: &mut bool, window: &Window| {
-        *dirty = true;
-        window.request_redraw();
-    };
 
     // Queue a redraw so the first frame is painted on the very first
     // event loop iteration, minimising the gap before content is visible.
@@ -543,24 +537,24 @@ fn main() {
                     center_window(&window);
                     app.pending_center = false;
                 }
-                mark_dirty(&mut dirty, &window);
+                window.request_redraw();
             }
 
             Event::NewEvents(_) => {
                 if app.tick_animation() {
-                    mark_dirty(&mut dirty, &window);
+                    window.request_redraw();
                 }
             }
 
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => elwt.exit(),
 
-                WindowEvent::Resized(_) => mark_dirty(&mut dirty, &window),
+                WindowEvent::Resized(_) => window.request_redraw(),
 
                 WindowEvent::CursorMoved { position, .. } => {
                     cursor = (position.x as f32, position.y as f32);
                     if app.update_drag(cursor) {
-                        mark_dirty(&mut dirty, &window);
+                        window.request_redraw();
                     }
                 }
 
@@ -576,14 +570,14 @@ fn main() {
                     state: ElementState::Pressed, ..
                 } => {
                     app.reset_pan();
-                    mark_dirty(&mut dirty, &window);
+                    window.request_redraw();
                 }
 
                 WindowEvent::DroppedFile(path) => {
                     if loader::is_supported(&path) {
                         let path = std::fs::canonicalize(&path).unwrap_or(path);
                         app.open_image(path, OpenMode::Navigate, &proxy);
-                        mark_dirty(&mut dirty, &window);
+                        window.request_redraw();
                     }
                 }
 
@@ -595,11 +589,11 @@ fn main() {
                 } => match code {
                     KeyCode::ArrowRight | KeyCode::ArrowDown | KeyCode::PageDown => {
                         app.navigate(true, &proxy);
-                        mark_dirty(&mut dirty, &window);
+                        window.request_redraw();
                     }
                     KeyCode::ArrowLeft | KeyCode::ArrowUp | KeyCode::PageUp => {
                         app.navigate(false, &proxy);
-                        mark_dirty(&mut dirty, &window);
+                        window.request_redraw();
                     }
                     KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
                         let fname = app.current_path.as_deref()
@@ -612,16 +606,13 @@ fn main() {
                     }
                     KeyCode::Backspace | KeyCode::Home => {
                         app.reset_pan();
-                        mark_dirty(&mut dirty, &window);
+                        window.request_redraw();
                     }
                     KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
                     _ => {}
                 },
 
                 WindowEvent::RedrawRequested => {
-                    if !dirty { return; }
-                    dirty = false;
-
                     let size  = window.inner_size();
                     let win_w = size.width;
                     let win_h = size.height;

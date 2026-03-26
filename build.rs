@@ -3,7 +3,7 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon("devoid.ico");
         res.set("ProductName", "Devoid Viewer");
-        res.set("FileDescription", "Ultra-fast Minimalist Image Viewer");
+        res.set("FileDescription", "Devoid Viewer");
         res.compile().unwrap();
     }
 }
