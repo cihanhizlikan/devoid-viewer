@@ -1,7 +1,7 @@
 //! Devoid Viewer — main.rs
 //!
 //! GUI: winit + softbuffer (CPU pixel blit, no GPU pipeline).
-//! Features: animated GIF, pan, async deletion,
+//! Features: animated GIF, async deletion,
 //!           exact work-area clamping on Windows.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -23,7 +23,7 @@ use nav::DirNavigator;
 use softbuffer::Surface;
 use winit::{
     dpi::LogicalSize,
-    event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent},
+    event::{ElementState, Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
@@ -59,7 +59,6 @@ type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
 struct View<'a> {
     image: &'a DecodedImage,
     frame: usize,
-    pan:   (f32, f32),
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -76,11 +75,6 @@ struct App {
     // Animation
     frame_index:   usize,
     next_frame_at: Option<Instant>,
-
-    // Pan
-    pan:        (f32, f32),           // screen-pixel offset from centre
-    drag_start: Option<(f32, f32)>,   // cursor pos when left-button went down
-    pan_origin: (f32, f32),           // pan value at drag start
 
     // Navigation
     navigator: DirNavigator,
@@ -103,9 +97,6 @@ impl App {
             current_image:  None,
             frame_index:    0,
             next_frame_at:  None,
-            pan:            (0.0, 0.0),
-            drag_start:     None,
-            pan_origin:     (0.0, 0.0),
             navigator:      DirNavigator::default(),
             msg_tx,
             msg_rx,
@@ -121,7 +112,6 @@ impl App {
         self.current_image.as_ref().map(|image| View {
             image,
             frame: self.frame_index,
-            pan:   self.pan,
         })
     }
 
@@ -148,7 +138,7 @@ impl App {
         });
     }
 
-    /// Store the image, reset pan, start animation.
+    /// Store the image, start animation.
     /// Returns Some((w,h)) when the caller should resize the window.
     fn apply_image(
         &mut self,
@@ -163,7 +153,6 @@ impl App {
         self.current_image = Some(img);
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
-        self.reset_pan();
         self.navigator.set_current(path);
         self.preload_adjacent(proxy);
         self.reset_animation();
@@ -174,7 +163,6 @@ impl App {
     fn clear_image(&mut self) {
         self.current_image = None;
         self.current_path  = None;
-        self.reset_pan();
         self.reset_animation();
     }
 
@@ -219,33 +207,6 @@ impl App {
             false
         }
     }
-
-    // ── Pan ───────────────────────────────────────────────────────────────────
-
-    fn reset_pan(&mut self) {
-        self.pan        = (0.0, 0.0);
-        self.drag_start = None;
-    }
-
-    fn start_drag(&mut self, cursor: (f32, f32)) {
-        self.drag_start = Some(cursor);
-        self.pan_origin = self.pan;
-    }
-
-    /// Returns true if a drag is active (caller should request redraw).
-    fn update_drag(&mut self, cursor: (f32, f32)) -> bool {
-        if let Some(start) = self.drag_start {
-            self.pan = (
-                self.pan_origin.0 + cursor.0 - start.0,
-                self.pan_origin.1 + cursor.1 - start.1,
-            );
-            true
-        } else {
-            false
-        }
-    }
-
-    fn end_drag(&mut self) { self.drag_start = None; }
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
@@ -359,8 +320,8 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
     let scale = fit_scale(v.image.width, v.image.height, win_w as f32, win_h as f32);
     let dst_w = (v.image.width  as f32 * scale) as i32;
     let dst_h = (v.image.height as f32 * scale) as i32;
-    let off_x = ((win_w as f32 - dst_w as f32) / 2.0 + v.pan.0) as i32;
-    let off_y = ((win_h as f32 - dst_h as f32) / 2.0 + v.pan.1) as i32;
+    let off_x = ((win_w as f32 - dst_w as f32) / 2.0) as i32;
+    let off_y = ((win_h as f32 - dst_h as f32) / 2.0) as i32;
 
     let pixels   = &v.image.frame(v.frame).pixels;
     let (iw, ih) = (v.image.width, v.image.height);
@@ -558,7 +519,6 @@ fn main() {
     }
 
     let mut app    = App::new(msg_tx, msg_rx);
-    let mut cursor = (0.0f32, 0.0f32);
     let mut shown  = !start_hidden;
 
     // Kick off the first image load on a background thread.
@@ -600,28 +560,6 @@ fn main() {
 
                 WindowEvent::Resized(_) => window.request_redraw(),
 
-                WindowEvent::CursorMoved { position, .. } => {
-                    cursor = (position.x as f32, position.y as f32);
-                    if app.update_drag(cursor) {
-                        window.request_redraw();
-                    }
-                }
-
-                WindowEvent::MouseInput { button: MouseButton::Left, state, .. } => {
-                    match state {
-                        ElementState::Pressed  => app.start_drag(cursor),
-                        ElementState::Released => app.end_drag(),
-                    }
-                }
-
-                WindowEvent::MouseInput {
-                    button: MouseButton::Middle,
-                    state: ElementState::Pressed, ..
-                } => {
-                    app.reset_pan();
-                    window.request_redraw();
-                }
-
                 WindowEvent::DroppedFile(path) => {
                     if loader::is_supported(&path) {
                         let path = std::fs::canonicalize(&path).unwrap_or(path);
@@ -652,10 +590,6 @@ fn main() {
                         if confirm_delete_dialog(&fname) {
                             app.request_delete(&proxy);
                         }
-                    }
-                    KeyCode::Backspace | KeyCode::Home => {
-                        app.reset_pan();
-                        window.request_redraw();
                     }
                     KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
                     _ => {}
