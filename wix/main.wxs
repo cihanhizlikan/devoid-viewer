@@ -155,7 +155,7 @@
                 Id='DefaultViewer'
                 Title='Set as Default Image Viewer'
                 Description='Make Devoid Viewer the default application for all supported image formats. This will replace your current default image viewer (e.g. Windows Photos).'
-                Level='2'
+                Level='1'
                 Absent='allow'>
                 <ComponentRef Id='DefaultAssociations'/>
             </Feature>
