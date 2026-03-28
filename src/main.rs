@@ -497,9 +497,16 @@ fn main() {
     // intermediate unsized/gray state. We reveal it once the image is ready.
     // When started without an image, show immediately as a drag-and-drop target.
     let start_hidden = initial_path.is_some();
+
+    // Load the application icon from the exe's embedded Win32 resources
+    // (placed there by winres/build.rs) and pass it to winit so the
+    // title bar and taskbar show devoid.ico instead of the generic icon.
+    let window_icon = load_window_icon();
+
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Devoid Viewer")
+            .with_window_icon(window_icon)
             .with_inner_size(LogicalSize::new(init_w, init_h))
             .with_min_inner_size(LogicalSize::new(120u32, 80u32))
             .with_visible(!start_hidden)
@@ -666,6 +673,89 @@ fn main() {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+/// Load the application icon from the executable's embedded Win32 resources.
+/// winres (build.rs) embeds devoid.ico as resource ID 1 (MAKEINTRESOURCE(1)).
+/// Returns None on non-Windows or if loading fails — winit uses its default.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            LoadImageW, GetIconInfo, ICONINFO, DestroyIcon, IMAGE_ICON,
+        };
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetDC, ReleaseDC, GetDIBits, DeleteObject,
+            BITMAPINFOHEADER, BITMAPINFO, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
+        };
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXSMICON, SM_CYSMICON,
+        };
+
+        unsafe {
+            // Load the small icon size (typically 16×16) used by the title bar.
+            let icon_w = GetSystemMetrics(SM_CXSMICON);
+            let icon_h = GetSystemMetrics(SM_CYSMICON);
+            let hicon = LoadImageW(
+                GetModuleHandleW(std::ptr::null()),
+                1 as _,   // resource ID 1 — embedded by winres/build.rs
+                IMAGE_ICON,
+                icon_w, icon_h,
+                0,
+            );
+            if hicon == 0 { return None; }
+
+            // GetIconInfo gives us the colour bitmap handle.
+            let mut info = ICONINFO { fIcon: 0, xHotspot: 0, yHotspot: 0,
+                                      hbmMask: 0, hbmColor: 0 };
+            if GetIconInfo(hicon, &mut info) == 0 {
+                DestroyIcon(hicon);
+                return None;
+            }
+
+            // BITMAPINFO with 32-bit depth; remaining fields zeroed.
+            let mut bmi: BITMAPINFO = std::mem::zeroed();
+            bmi.bmiHeader.biSize     = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biPlanes   = 1;
+            bmi.bmiHeader.biCompression = BI_RGB;
+            bmi.bmiColors = [RGBQUAD { rgbBlue: 0, rgbGreen: 0,
+                                       rgbRed: 0, rgbReserved: 0 }];
+
+            // First GetDIBits call: populate biWidth/biHeight.
+            let hdc = GetDC(0);
+            GetDIBits(hdc, info.hbmColor, 0, 0,
+                      std::ptr::null_mut(), &mut bmi, DIB_RGB_COLORS);
+            let w = bmi.bmiHeader.biWidth.unsigned_abs();
+            let h = bmi.bmiHeader.biHeight.unsigned_abs();
+
+            let result = if w > 0 && h > 0 {
+                // Negative biHeight → top-down row order.
+                bmi.bmiHeader.biHeight = -(h as i32);
+                let mut pixels = vec![0u8; (w * h * 4) as usize];
+                GetDIBits(hdc, info.hbmColor, 0, h,
+                          pixels.as_mut_ptr() as *mut _,
+                          &mut bmi, DIB_RGB_COLORS);
+                // GDI returns BGRA; winit expects RGBA — swap B and R.
+                for px in pixels.chunks_exact_mut(4) { px.swap(0, 2); }
+                winit::window::Icon::from_rgba(pixels, w, h).ok()
+            } else {
+                None
+            };
+
+            // Clean up all GDI handles regardless of outcome.
+            ReleaseDC(0, hdc);
+            DeleteObject(info.hbmColor);
+            DeleteObject(info.hbmMask);
+            DestroyIcon(hicon);
+
+            result
+        }
+    }
+    #[cfg(not(windows))]
+    { None }
+}
 
 /// Read only the file header for dimensions — no full decode.
 fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
