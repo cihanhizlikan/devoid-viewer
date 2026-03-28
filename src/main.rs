@@ -24,10 +24,12 @@ use softbuffer::Surface;
 use winit::{
     dpi::LogicalSize,
     event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
+    event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
+#[cfg(windows)]
+use winit::platform::windows::EventLoopBuilderExtWindows;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -382,18 +384,22 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 
 // ── Native dialogs ────────────────────────────────────────────────────────────
 
+/// Encode a Rust string as a null-terminated UTF-16 Vec for Win32 API calls.
+#[cfg(windows)]
+fn to_wide(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
+}
+
 fn confirm_delete_dialog(filename: &str) -> bool {
     #[cfg(windows)]
     {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             MessageBoxW, MB_ICONWARNING, MB_YESNO, IDYES,
         };
-        let text: Vec<u16> = OsStr::new(&format!("Permanently delete\n\n{filename}?"))
-            .encode_wide().chain(Some(0)).collect();
-        let cap: Vec<u16> = OsStr::new("Delete Image")
-            .encode_wide().chain(Some(0)).collect();
+        let text = to_wide(&format!("Permanently delete\n\n{filename}?"));
+        let cap  = to_wide("Delete Image");
         unsafe {
             MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES
         }
@@ -405,11 +411,9 @@ fn confirm_delete_dialog(filename: &str) -> bool {
 fn show_error_dialog(msg: &str) {
     #[cfg(windows)]
     {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-        let text: Vec<u16> = OsStr::new(msg).encode_wide().chain(Some(0)).collect();
-        let cap:  Vec<u16> = OsStr::new("Devoid Viewer").encode_wide().chain(Some(0)).collect();
+        let text = to_wide(msg);
+        let cap  = to_wide("Devoid Viewer");
         unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK); }
     }
     #[cfg(not(windows))]
@@ -479,34 +483,47 @@ fn main() {
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
 
     // Probe the image header for dimensions — fast, no full decode.
-    // This lets us size the window correctly and show intentional gray
-    // immediately, while the full decode happens on a background thread.
-    // The user sees a correctly-sized gray window at once rather than a
-    // white rectangle for the duration of a potentially slow decode.
+    // The window is sized correctly and shows gray immediately while the full
+    // decode runs on a background thread.
     let (init_w, init_h) = initial_path.as_deref()
         .and_then(image_size_hint)
         .unwrap_or((800, 600));
 
     let (msg_tx, msg_rx) = bounded::<Msg>(32);
 
-    let event_loop: EventLoop<WakeUp> = EventLoopBuilder::with_user_event()
-        .build().expect("event loop");
-    let proxy = event_loop.create_proxy();
+    let mut el_builder: EventLoopBuilder<WakeUp> = EventLoopBuilder::with_user_event();
 
-    // Hide the window when an image is provided so the user never sees the
-    // intermediate unsized/gray state. We reveal it once the image is ready.
+    // On Windows, the taskbar thumbnail close button sends WM_SYSCOMMAND/SC_CLOSE
+    // which winit 0.29 does not translate into CloseRequested. Re-post it as
+    // WM_CLOSE, which winit does handle, so both close paths behave identically.
+    #[cfg(windows)]
+    el_builder.with_msg_hook(|msg| {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            PostMessageW, WM_CLOSE, WM_SYSCOMMAND, SC_CLOSE,
+        };
+        let msg = msg as *const windows_sys::Win32::UI::WindowsAndMessaging::MSG;
+        unsafe {
+            if (*msg).message == WM_SYSCOMMAND
+                && ((*msg).wParam & 0xFFF0) as u32 == SC_CLOSE
+            {
+                PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0);
+            }
+        }
+        false
+    });
+
+    let event_loop = el_builder.build().expect("event loop");
+    let proxy      = event_loop.create_proxy();
+
+    // Hide the window when an image is provided — reveal it once the image is
+    // ready so the user sees the correct content on first appearance.
     // When started without an image, show immediately as a drag-and-drop target.
     let start_hidden = initial_path.is_some();
-
-    // Load the application icon from the exe's embedded Win32 resources
-    // (placed there by winres/build.rs) and pass it to winit so the
-    // title bar and taskbar show devoid.ico instead of the generic icon.
-    let window_icon = load_window_icon();
 
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Devoid Viewer")
-            .with_window_icon(window_icon)
+            .with_window_icon(load_window_icon())
             .with_inner_size(LogicalSize::new(init_w, init_h))
             .with_min_inner_size(LogicalSize::new(120u32, 80u32))
             .with_visible(!start_hidden)
@@ -514,7 +531,7 @@ fn main() {
     );
 
     // Clamp to work area and centre before the event loop begins.
-    if initial_path.is_some() {
+    if start_hidden {
         let (cw, ch) = clamp_to_work_area(init_w, init_h, &window);
         let _ = window.request_inner_size(LogicalSize::new(cw, ch));
         center_window(&window);
@@ -524,8 +541,7 @@ fn main() {
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
 
     // Paint the surface gray synchronously before the event loop starts.
-    // This overwrites the DWM white background immediately — the user never
-    // sees white because we fill the buffer before yielding to the OS.
+    // This overwrites the DWM white background before the window is shown.
     {
         let size  = window.inner_size();
         let win_w = size.width.max(1);
@@ -535,19 +551,17 @@ fn main() {
             NonZeroU32::new(win_h).unwrap(),
         ).is_ok() {
             if let Ok(mut buf) = surface.buffer_mut() {
-                let bg = ((BG as u32) << 16) | ((BG as u32) << 8) | BG as u32;
-                buf.fill(bg);
+                buf.fill(pack_rgb(BG, BG, BG));
                 let _ = buf.present();
             }
         }
     }
 
-    let mut app     = App::new(msg_tx, msg_rx);
-    let mut cursor  = (0.0f32, 0.0f32);
-    let mut shown   = !start_hidden;  // already visible when no image arg
+    let mut app    = App::new(msg_tx, msg_rx);
+    let mut cursor = (0.0f32, 0.0f32);
+    let mut shown  = !start_hidden;
 
     // Kick off the first image load on a background thread.
-    // The window shows gray until it arrives via the normal WakeUp path.
     if let Some(path) = initial_path {
         app.open_image(path, OpenMode::FirstImage, &proxy);
     }
@@ -567,8 +581,6 @@ fn main() {
                 } else if app.pending_center {
                     center_window(&window);
                     app.pending_center = false;
-                    // Reveal the window now: it is the correct size, centred,
-                    // and the next RedrawRequested will paint the image.
                     if !shown {
                         shown = true;
                         window.set_visible(true);
@@ -674,90 +686,21 @@ fn main() {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/// Load the application icon from the executable's embedded Win32 resources.
-/// winres (build.rs) embeds devoid.ico as resource ID 1 (MAKEINTRESOURCE(1)).
-/// Returns None on non-Windows or if loading fails — winit uses its default.
+/// Load the application icon from the embedded ico file.
+/// devoid.ico is compiled in via include_bytes! so no runtime file path is needed.
 fn load_window_icon() -> Option<winit::window::Icon> {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            LoadImageW, GetIconInfo, ICONINFO, DestroyIcon, IMAGE_ICON,
-        };
-        use windows_sys::Win32::Graphics::Gdi::{
-            GetDC, ReleaseDC, GetDIBits, DeleteObject,
-            BITMAPINFOHEADER, BITMAPINFO, BI_RGB, DIB_RGB_COLORS, RGBQUAD,
-        };
-        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXSMICON, SM_CYSMICON,
-        };
-
-        unsafe {
-            // Load the small icon size (typically 16×16) used by the title bar.
-            let icon_w = GetSystemMetrics(SM_CXSMICON);
-            let icon_h = GetSystemMetrics(SM_CYSMICON);
-            let hicon = LoadImageW(
-                GetModuleHandleW(std::ptr::null()),
-                1 as _,   // resource ID 1 — embedded by winres/build.rs
-                IMAGE_ICON,
-                icon_w, icon_h,
-                0,
-            );
-            if hicon == 0 { return None; }
-
-            // GetIconInfo gives us the colour bitmap handle.
-            let mut info = ICONINFO { fIcon: 0, xHotspot: 0, yHotspot: 0,
-                                      hbmMask: 0, hbmColor: 0 };
-            if GetIconInfo(hicon, &mut info) == 0 {
-                DestroyIcon(hicon);
-                return None;
-            }
-
-            // BITMAPINFO with 32-bit depth; remaining fields zeroed.
-            let mut bmi: BITMAPINFO = std::mem::zeroed();
-            bmi.bmiHeader.biSize     = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biPlanes   = 1;
-            bmi.bmiHeader.biCompression = BI_RGB;
-            bmi.bmiColors = [RGBQUAD { rgbBlue: 0, rgbGreen: 0,
-                                       rgbRed: 0, rgbReserved: 0 }];
-
-            // First GetDIBits call: populate biWidth/biHeight.
-            let hdc = GetDC(0);
-            GetDIBits(hdc, info.hbmColor, 0, 0,
-                      std::ptr::null_mut(), &mut bmi, DIB_RGB_COLORS);
-            let w = bmi.bmiHeader.biWidth.unsigned_abs();
-            let h = bmi.bmiHeader.biHeight.unsigned_abs();
-
-            let result = if w > 0 && h > 0 {
-                // Negative biHeight → top-down row order.
-                bmi.bmiHeader.biHeight = -(h as i32);
-                let mut pixels = vec![0u8; (w * h * 4) as usize];
-                GetDIBits(hdc, info.hbmColor, 0, h,
-                          pixels.as_mut_ptr() as *mut _,
-                          &mut bmi, DIB_RGB_COLORS);
-                // GDI returns BGRA; winit expects RGBA — swap B and R.
-                for px in pixels.chunks_exact_mut(4) { px.swap(0, 2); }
-                winit::window::Icon::from_rgba(pixels, w, h).ok()
-            } else {
-                None
-            };
-
-            // Clean up all GDI handles regardless of outcome.
-            ReleaseDC(0, hdc);
-            DeleteObject(info.hbmColor);
-            DeleteObject(info.hbmMask);
-            DestroyIcon(hicon);
-
-            result
-        }
-    }
-    #[cfg(not(windows))]
-    { None }
+    let ico_bytes = include_bytes!("../devoid.ico");
+    let img = image::load_from_memory_with_format(
+        ico_bytes,
+        image::ImageFormat::Ico,
+    ).ok()?;
+    let rgba    = img.into_rgba8();
+    let (w, h)  = rgba.dimensions();
+    winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
 
 /// Read only the file header for dimensions — no full decode.
+/// For SVG the entire document is parsed since there is no header-only path.
 fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
     let ext = path.extension()?.to_ascii_lowercase();
     if ext == "svg" {
