@@ -41,21 +41,26 @@ const BG: u8 = 42;
 /// Messages from background threads to the UI thread.
 #[derive(Debug)]
 enum Msg {
-    Loaded   { path: PathBuf, image: DecodedImage, resize: bool },
+    /// Primary decode finished. `mode` tells the UI whether to resize the window.
+    Loaded   { path: PathBuf, image: DecodedImage, mode: OpenMode },
+    /// Speculative decode for the preload cache.
     Preloaded{ path: PathBuf, image: DecodedImage },
-    Error    { path: PathBuf, msg:   String },
+    /// Decode failed.
+    Error    { path: PathBuf, msg: String },
+    /// Async file deletion result.
     Deleted  { path: PathBuf, result: Result<(), String> },
 }
 
-/// Zero-size token injected by background threads to wake the event loop.
+/// Zero-size token sent by background threads to wake the event loop.
 #[derive(Debug)]
 struct WakeUp;
 
 type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
 
-// ── View state (everything the renderer needs) ────────────────────────────────
+// ── View state ────────────────────────────────────────────────────────────────
 
 /// Snapshot passed to `render()` each frame.
+/// Keeps the renderer signature stable and decoupled from App internals.
 struct View<'a> {
     image: &'a DecodedImage,
     frame: usize,
@@ -63,8 +68,8 @@ struct View<'a> {
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
-/// Whether the window should resize to match a newly opened image.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Controls whether a newly opened image resizes the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OpenMode { FirstImage, Navigate }
 
 struct App {
@@ -122,15 +127,17 @@ impl App {
             self.apply_image(path, img, mode, proxy);
             return;
         }
+
+        // Seed the navigator immediately so peek_next/peek_prev are accurate
+        // for preloading even before the decode thread finishes.
         self.loading_path = Some(path.clone());
         self.navigator.set_current(path.clone());
 
-        let tx     = self.msg_tx.clone();
-        let proxy  = proxy.clone();
-        let resize = mode == OpenMode::FirstImage;
+        let tx    = self.msg_tx.clone();
+        let proxy = proxy.clone();
         std::thread::spawn(move || {
             let msg = match load_image(&path) {
-                Ok(img) => Msg::Loaded { path, image: img, resize },
+                Ok(img) => Msg::Loaded { path, image: img, mode },
                 Err(e)  => Msg::Error  { path, msg: e.to_string() },
             };
             let _ = tx.send(msg);
@@ -138,13 +145,13 @@ impl App {
         });
     }
 
-    /// Store the image, start animation.
-    /// Returns Some((w,h)) when the caller should resize the window.
+    /// Store the image and start animation.
+    /// Returns `Some((w, h))` when the caller should resize the window.
     fn apply_image(
         &mut self,
-        path:  PathBuf,
-        img:   DecodedImage,
-        mode:  OpenMode,
+        path: PathBuf,
+        img:  DecodedImage,
+        mode: OpenMode,
         proxy: &Proxy,
     ) -> Option<(u32, u32)> {
         let resize_dims = (mode == OpenMode::FirstImage)
@@ -153,6 +160,8 @@ impl App {
         self.current_image = Some(img);
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
+        // Update navigator again now that the image is confirmed loaded,
+        // then kick off speculative decodes for both neighbours.
         self.navigator.set_current(path);
         self.preload_adjacent(proxy);
         self.reset_animation();
@@ -167,8 +176,11 @@ impl App {
     }
 
     fn preload_adjacent(&mut self, proxy: &Proxy) {
+        // Speculatively decode the next and previous siblings so navigation
+        // feels instant. peek_* return None for single-image directories.
         for path in [self.navigator.peek_next(), self.navigator.peek_prev()]
-            .into_iter().flatten()
+            .into_iter()
+            .flatten()
         {
             if self.preload_cache.contains_key(&path) { continue; }
             let tx    = self.msg_tx.clone();
@@ -191,8 +203,8 @@ impl App {
             .map(|i| Instant::now() + Duration::from_millis(i.frame(0).delay_ms as u64));
     }
 
-    /// Advance to the next frame if its deadline has passed.
-    /// Returns true when a redraw is needed.
+    /// Advance to the next GIF frame if its deadline has passed.
+    /// Returns `true` when a redraw is needed.
     fn tick_animation(&mut self) -> bool {
         let Some(deadline) = self.next_frame_at else { return false; };
         if Instant::now() < deadline { return false; }
@@ -211,8 +223,10 @@ impl App {
     // ── Navigation ────────────────────────────────────────────────────────────
 
     fn navigate(&mut self, forward: bool, proxy: &Proxy) {
-        let p = if forward { self.navigator.next() } else { self.navigator.prev() };
-        if let Some(p) = p { self.open_image(p, OpenMode::Navigate, proxy); }
+        let path = if forward { self.navigator.next() } else { self.navigator.prev() };
+        if let Some(path) = path {
+            self.open_image(path, OpenMode::Navigate, proxy);
+        }
     }
 
     // ── Deletion ──────────────────────────────────────────────────────────────
@@ -247,7 +261,7 @@ impl App {
     // ── Message drain ─────────────────────────────────────────────────────────
 
     /// Drains the message channel.
-    /// Returns Some((w,h)) when the window should be resized for the first image.
+    /// Returns `Some((w, h))` when the window should be resized for the first image.
     fn drain_messages(&mut self, proxy: &Proxy) -> Option<(u32, u32)> {
         let mut resize_to = None;
         while let Ok(msg) = self.msg_rx.try_recv() {
@@ -255,9 +269,8 @@ impl App {
                 Msg::Preloaded { path, image } => {
                     self.preload_cache.insert(path, image);
                 }
-                Msg::Loaded { path, image, resize } => {
+                Msg::Loaded { path, image, mode } => {
                     if self.loading_path.as_deref() == Some(path.as_path()) {
-                        let mode = if resize { OpenMode::FirstImage } else { OpenMode::Navigate };
                         if let Some(dims) = self.apply_image(path, image, mode, proxy) {
                             resize_to = Some(dims);
                         }
@@ -280,10 +293,10 @@ impl App {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-/// Fit-to-window scale: the largest uniform scale that fits the image in the panel.
+/// Fit-to-window scale: the largest uniform scale that fits `img` inside the panel.
 #[inline]
-fn fit_scale(img_w: u32, img_h: u32, win_w: f32, win_h: f32) -> f32 {
-    (win_h / img_h as f32).min(win_w / img_w as f32)
+fn fit_scale(img_w: u32, img_h: u32, win_w: u32, win_h: u32) -> f32 {
+    (win_h as f32 / img_h as f32).min(win_w as f32 / img_w as f32)
 }
 
 /// Nearest-neighbour sample from an RGBA8 pixel buffer.
@@ -292,60 +305,65 @@ fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
     let x = (sx as u32).min(w - 1);
     let y = (sy as u32).min(h - 1);
     let i = (y * w + x) as usize * 4;
-    [pixels[i], pixels[i+1], pixels[i+2], pixels[i+3]]
+    [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
 }
 
 /// Alpha-composite a straight-RGBA pixel over the background colour.
 #[inline]
 fn composite(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    #[inline] fn blend(src: u8, a: u32) -> u8 {
+    #[inline]
+    fn blend(src: u8, a: u32) -> u8 {
         ((src as u32 * a + BG as u32 * (255 - a)) / 255) as u8
     }
     let a = a as u32;
     pack_rgb(blend(r, a), blend(g, a), blend(b, a))
 }
 
-/// Pack RGB into softbuffer's 0x00RRGGBB u32.
+/// Pack RGB into softbuffer's `0x00RRGGBB` u32.
 #[inline]
 fn pack_rgb(r: u8, g: u8, b: u8) -> u32 {
     ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
 
-/// Write pixels into `buf` (softbuffer 0x00RRGGBB format).
+/// Write pixels into `buf` (softbuffer `0x00RRGGBB` format).
 fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
     let bg = pack_rgb(BG, BG, BG);
 
-    let Some(v) = view else { buf.fill(bg); return; };
+    let Some(v) = view else {
+        buf.fill(bg);
+        return;
+    };
 
-    let scale = fit_scale(v.image.width, v.image.height, win_w as f32, win_h as f32);
+    let scale = fit_scale(v.image.width, v.image.height, win_w, win_h);
     let dst_w = (v.image.width  as f32 * scale) as i32;
     let dst_h = (v.image.height as f32 * scale) as i32;
     let off_x = ((win_w as f32 - dst_w as f32) / 2.0) as i32;
     let off_y = ((win_h as f32 - dst_h as f32) / 2.0) as i32;
 
-    let pixels   = &v.image.frame(v.frame).pixels;
+    let pixels   = v.image.frame(v.frame).pixels.as_slice();
     let (iw, ih) = (v.image.width, v.image.height);
 
+    // Iterate rows then columns — dx and dy are cheap counters, not divisions.
     for dy in 0..win_h as i32 {
         for dx in 0..win_w as i32 {
-            let px = if dx >= off_x && dx < off_x + dst_w
-                     && dy >= off_y && dy < off_y + dst_h
-            {
-                let sx = (dx - off_x) as f32 / scale;
-                let sy = (dy - off_y) as f32 / scale;
-                let [r, g, b, a] = nearest(pixels, iw, ih, sx, sy);
-                composite(r, g, b, a)
-            } else {
-                bg
-            };
-            buf[(dy as u32 * win_w + dx as u32) as usize] = px;
+            buf[dy as usize * win_w as usize + dx as usize] =
+                if dx >= off_x && dx < off_x + dst_w
+                && dy >= off_y && dy < off_y + dst_h
+                {
+                    let sx = (dx - off_x) as f32 / scale;
+                    let sy = (dy - off_y) as f32 / scale;
+                    let [r, g, b, a] = nearest(pixels, iw, ih, sx, sy);
+                    composite(r, g, b, a)
+                } else {
+                    bg
+                };
         }
     }
 }
 
 // ── Native dialogs ────────────────────────────────────────────────────────────
 
-/// Encode a Rust string as a null-terminated UTF-16 Vec for Win32 API calls.
+/// Encode a Rust `&str` as a null-terminated UTF-16 `Vec` for Win32 API calls.
 #[cfg(windows)]
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
@@ -384,7 +402,7 @@ fn show_error_dialog(msg: &str) {
 // ── Window helpers ────────────────────────────────────────────────────────────
 
 /// Returns the usable desktop area in logical pixels.
-/// On Windows uses SPI_GETWORKAREA (precise taskbar exclusion).
+/// On Windows uses `SPI_GETWORKAREA` (precise taskbar exclusion).
 /// Elsewhere uses 90% × 85% of the monitor size as a heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
     #[cfg(windows)]
@@ -424,16 +442,16 @@ fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
 }
 
 fn center_window(window: &Window) {
-    if let Some(mon) = window.current_monitor().or_else(|| window.available_monitors().next()) {
-        let mp = mon.position();
-        let ms = mon.size();
-        let ws = window.outer_size();
-        let sf = mon.scale_factor();
-        let x  = mp.x + (ms.width  as i32 - ws.width  as i32) / 2;
-        let y  = (mp.y + (ms.height as i32 - ws.height as i32) / 2)
-                 .max(mp.y + (30.0 * sf) as i32);
-        window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
-    }
+    let Some(mon) = window.current_monitor()
+        .or_else(|| window.available_monitors().next()) else { return };
+    let mp = mon.position();
+    let ms = mon.size();
+    let ws = window.outer_size();
+    let sf = mon.scale_factor();
+    let x  = mp.x + (ms.width  as i32 - ws.width  as i32) / 2;
+    let y  = (mp.y + (ms.height as i32 - ws.height as i32) / 2)
+             .max(mp.y + (30.0 * sf) as i32);
+    window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -518,8 +536,8 @@ fn main() {
         }
     }
 
-    let mut app    = App::new(msg_tx, msg_rx);
-    let mut shown  = !start_hidden;
+    let mut app   = App::new(msg_tx, msg_rx);
+    let mut shown = !start_hidden;
 
     // Kick off the first image load on a background thread.
     if let Some(path) = initial_path {
@@ -621,20 +639,17 @@ fn main() {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /// Load the application icon from the embedded ico file.
-/// devoid.ico is compiled in via include_bytes! so no runtime file path is needed.
+/// `devoid.ico` is compiled in via `include_bytes!` — no runtime file path needed.
 fn load_window_icon() -> Option<winit::window::Icon> {
-    let ico_bytes = include_bytes!("../devoid.ico");
-    let img = image::load_from_memory_with_format(
-        ico_bytes,
-        image::ImageFormat::Ico,
-    ).ok()?;
-    let rgba    = img.into_rgba8();
-    let (w, h)  = rgba.dimensions();
+    let bytes = include_bytes!("../devoid.ico");
+    let img   = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico).ok()?;
+    let rgba  = img.into_rgba8();
+    let (w, h) = rgba.dimensions();
     winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
 
 /// Read only the file header for dimensions — no full decode.
-/// For SVG the entire document is parsed since there is no header-only path.
+/// SVG is an exception: the full document is parsed since there is no header-only path.
 fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
     let ext = path.extension()?.to_ascii_lowercase();
     if ext == "svg" {
