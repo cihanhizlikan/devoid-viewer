@@ -1,25 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <!--
   Copyright (C) 2017 Christopher R. Field.
-
-  Licensed under the Apache License, Version 2.0 (the "License");
-  you may not use this file except in compliance with the License.
-  You may obtain a copy of the License at
-
-  http://www.apache.org/licenses/LICENSE-2.0
-
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS,
-  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  See the License for the specific language governing permissions and
-  limitations under the License.
--->
-
-<!--
-  Please do not remove these pre-processor If-Else blocks. These are used with
-  the `cargo wix` subcommand to automatically determine the installation
-  destination for 32-bit versus 64-bit installers. Removal of these lines will
-  cause installation errors.
+  Licensed under the Apache License, Version 2.0.
 -->
 <?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
     <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
@@ -46,8 +28,7 @@
             Languages='1033'
             Compressed='yes'
             InstallScope='perMachine'
-            SummaryCodepage='1252'
-            />
+            SummaryCodepage='1252'/>
 
         <MajorUpgrade
             Schedule='afterInstallInitialize'
@@ -55,10 +36,8 @@
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes'/>
 
-        <!-- Product icon shown in Add/Remove Programs -->
         <Icon Id='ProductICO' SourceFile='devoid.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
-
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
@@ -75,52 +54,43 @@
                             KeyPath='yes'/>
                     </Component>
 
-                    <!-- File associations: all formats supported by Devoid Viewer -->
+                    <!-- File associations written as explicit registry values.
+                         This avoids the LGHT0130 collision that WiX 3's ProgId/Extension
+                         elements produce when registering multiple extensions. -->
                     <Component Id='FileAssociations' Guid='B3C1A2D4-9E7F-4A3B-8C6D-1E2F3A4B5C6D'>
-                        <ProgId Id='DevoidViewer.ImageFile'
-                                Description='Image file'
-                                Icon='exe0'
-                                IconIndex='0'
-                                Advertise='no'>
-                            <Extension Id='jpg'  ContentType='image/jpeg'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='jpeg' ContentType='image/jpeg'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='png'  ContentType='image/png'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='bmp'  ContentType='image/bmp'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='gif'  ContentType='image/gif'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='webp' ContentType='image/webp'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='tiff' ContentType='image/tiff'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='tif'  ContentType='image/tiff'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='ico'  ContentType='image/x-icon'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='jxl'  ContentType='image/jxl'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                            <Extension Id='svg'  ContentType='image/svg+xml'>
-                                <Verb Id='open' Command='Open' TargetFile='exe0' Argument='"%1"'/>
-                            </Extension>
-                        </ProgId>
+                        <!-- ProgId: the application identifier (default value doubles as KeyPath) -->
+                        <RegistryValue Id='reg_ProgId_open'       Root='HKCR' Key='DevoidViewer.ImageFile\shell\open\command'        Type='string'  Value='"[APPLICATIONFOLDER]DevoidViewer.exe" "%1"'/>
+                        <RegistryValue Id='reg_ProgId_icon'       Root='HKCR' Key='DevoidViewer.ImageFile\DefaultIcon'               Type='string'  Value='"[APPLICATIONFOLDER]DevoidViewer.exe",0'/>
+                        <!-- Extensions -->
+                        <RegistryValue Id='reg_ext_jpg'           Root='HKCR' Key='.jpg'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_jpeg'          Root='HKCR' Key='.jpeg'                                           Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_png'           Root='HKCR' Key='.png'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_bmp'           Root='HKCR' Key='.bmp'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_gif'           Root='HKCR' Key='.gif'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_webp'          Root='HKCR' Key='.webp'                                           Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_tiff'          Root='HKCR' Key='.tiff'                                           Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_tif'           Root='HKCR' Key='.tif'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_ico'           Root='HKCR' Key='.ico'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_jxl'           Root='HKCR' Key='.jxl'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <RegistryValue Id='reg_ext_svg'           Root='HKCR' Key='.svg'                                            Type='string'  Value='DevoidViewer.ImageFile'/>
+                        <!-- OpenWithProgIds so Devoid Viewer appears in "Open With" without
+                             overriding the user's existing default application -->
+                        <RegistryValue Id='reg_owp_jpg'           Root='HKCR' Key='.jpg\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_jpeg'          Root='HKCR' Key='.jpeg\OpenWithProgIds\DevoidViewer.ImageFile'    Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_png'           Root='HKCR' Key='.png\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_bmp'           Root='HKCR' Key='.bmp\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_gif'           Root='HKCR' Key='.gif\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_webp'          Root='HKCR' Key='.webp\OpenWithProgIds\DevoidViewer.ImageFile'    Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_tiff'          Root='HKCR' Key='.tiff\OpenWithProgIds\DevoidViewer.ImageFile'    Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_tif'           Root='HKCR' Key='.tif\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_ico'           Root='HKCR' Key='.ico\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_jxl'           Root='HKCR' Key='.jxl\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <RegistryValue Id='reg_owp_svg'           Root='HKCR' Key='.svg\OpenWithProgIds\DevoidViewer.ImageFile'     Type='string'  Value=''/>
+                        <!-- KeyPath: tracks whether this component is installed -->
+                        <RegistryValue Id='reg_installed'         Root='HKCR' Key='DevoidViewer.ImageFile'                          Type='string'  Value='Image File' KeyPath='yes'/>
                     </Component>
 
-                    <!-- Desktop shortcut.
-                         CreateFolder on APPLICATIONFOLDER is the KeyPath — avoids
-                         any registry key collision with the FileAssociations component. -->
+                    <!-- Desktop shortcut -->
                     <Component Id='ApplicationShortcut' Guid='A1B2C3D4-E5F6-7890-ABCD-EF1234567890'>
                         <Shortcut Id='DesktopShortcut'
                             Directory='DesktopFolder'
@@ -129,23 +99,22 @@
                             WorkingDirectory='APPLICATIONFOLDER'
                             Icon='ProductICO'/>
                         <RemoveFolder Id='RemoveDesktopFolder' Directory='DesktopFolder' On='uninstall'/>
-                        <CreateFolder Directory='APPLICATIONFOLDER' KeyPath='yes'/>
+                        <RegistryValue Id='reg_shortcut'          Root='HKCU' Key='Software\DevoidViewer'                          Type='integer' Value='2' KeyPath='yes'/>
                     </Component>
 
                 </Directory>
             </Directory>
 
-            <!-- Required for desktop shortcut -->
             <Directory Id='DesktopFolder'/>
         </Directory>
 
-        <!-- Refresh shell icon cache so file type icons appear immediately -->
+        <!-- Refresh shell icon cache so file type icons appear immediately.
+             Runs as an immediate action after InstallFinalize. -->
         <CustomAction
             Id='RefreshShellIcons'
             Directory='TARGETDIR'
             ExeCommand='[SystemFolder]ie4uinit.exe -ClearIconCache'
-            Execute='deferred'
-            Impersonate='no'
+            Execute='immediate'
             Return='ignore'/>
 
         <InstallExecuteSequence>
@@ -161,10 +130,8 @@
             AllowAdvertise='no'
             Display='expand'
             Absent='disallow'>
-
             <ComponentRef Id='binary0'/>
             <ComponentRef Id='FileAssociations'/>
-
             <Feature
                 Id='DesktopShortcut'
                 Title='Desktop Shortcut'
@@ -173,7 +140,6 @@
                 Absent='allow'>
                 <ComponentRef Id='ApplicationShortcut'/>
             </Feature>
-
         </Feature>
 
         <UI>
