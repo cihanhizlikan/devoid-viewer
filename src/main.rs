@@ -478,13 +478,13 @@ fn main() {
         .map(PathBuf::from)
         .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
 
-    // Decode the first image synchronously so the window opens showing the
-    // correct content — no blank flash, no async round-trip for startup.
-    let initial_image: Option<DecodedImage> = initial_path.as_deref()
-        .and_then(|p| load_image(p).ok());
-
-    let (init_w, init_h) = initial_image.as_ref()
-        .map(|img| (img.width, img.height))
+    // Probe the image header for dimensions — fast, no full decode.
+    // This lets us size the window correctly and show intentional gray
+    // immediately, while the full decode happens on a background thread.
+    // The user sees a correctly-sized gray window at once rather than a
+    // white rectangle for the duration of a potentially slow decode.
+    let (init_w, init_h) = initial_path.as_deref()
+        .and_then(image_size_hint)
         .unwrap_or((800, 600));
 
     let (msg_tx, msg_rx) = bounded::<Msg>(32);
@@ -502,7 +502,7 @@ fn main() {
     );
 
     // Clamp to work area and centre before the event loop begins.
-    if initial_image.is_some() {
+    if initial_path.is_some() {
         let (cw, ch) = clamp_to_work_area(init_w, init_h, &window);
         let _ = window.request_inner_size(LogicalSize::new(cw, ch));
         center_window(&window);
@@ -510,16 +510,34 @@ fn main() {
 
     let ctx         = softbuffer::Context::new(window.clone()).expect("softbuffer context");
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
+
+    // Paint the surface gray synchronously before the event loop starts.
+    // This overwrites the DWM white background immediately — the user never
+    // sees white because we fill the buffer before yielding to the OS.
+    {
+        let size  = window.inner_size();
+        let win_w = size.width.max(1);
+        let win_h = size.height.max(1);
+        if surface.resize(
+            NonZeroU32::new(win_w).unwrap(),
+            NonZeroU32::new(win_h).unwrap(),
+        ).is_ok() {
+            if let Ok(mut buf) = surface.buffer_mut() {
+                let bg = ((BG as u32) << 16) | ((BG as u32) << 8) | BG as u32;
+                buf.fill(bg);
+                let _ = buf.present();
+            }
+        }
+    }
+
     let mut app     = App::new(msg_tx, msg_rx);
     let mut cursor  = (0.0f32, 0.0f32);
 
-    if let (Some(path), Some(img)) = (initial_path, initial_image) {
-        app.apply_image(path, img, OpenMode::Navigate, &proxy);
+    // Kick off the first image load on a background thread.
+    // The window shows gray until it arrives via the normal WakeUp path.
+    if let Some(path) = initial_path {
+        app.open_image(path, OpenMode::FirstImage, &proxy);
     }
-
-    // Queue a redraw so the first frame is painted on the very first
-    // event loop iteration, minimising the gap before content is visible.
-    window.request_redraw();
 
     event_loop.run(move |event, elwt| {
         elwt.set_control_flow(match app.next_frame_at {
@@ -633,4 +651,21 @@ fn main() {
             _ => {}
         }
     }).expect("event loop error");
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+/// Read only the file header for dimensions — no full decode.
+fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
+    let ext = path.extension()?.to_ascii_lowercase();
+    if ext == "svg" {
+        let data = std::fs::read(path).ok()?;
+        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
+        let sz   = tree.size();
+        return Some((sz.width() as u32, sz.height() as u32));
+    }
+    let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    image::ImageReader::new(reader)
+        .with_guessed_format().ok()?
+        .into_dimensions().ok()
 }
