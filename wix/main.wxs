@@ -16,35 +16,6 @@
 -->
 
 <!--
-  The "cargo wix" subcommand provides a variety of predefined variables available
-  for customization of this template. The values for each variable are set at
-  installer creation time. The following variables are available:
-
-  TargetTriple      = The rustc target triple name.
-  TargetEnv         = The rustc target environment. This is typically either
-                      "msvc" or "gnu" depending on the toolchain downloaded and
-                      installed.
-  TargetVendor      = The rustc target vendor. This is typically "pc", but Rust
-                      does support other vendors, like "uwp".
-  CargoTargetBinDir = The complete path to the directory containing the
-                      binaries (exes) to include. The default would be
-                      "target\release\". If an explicit rustc target triple is
-                      used, i.e. cross-compiling, then the default path would
-                      be "target\<CARGO_TARGET>\<CARGO_PROFILE>",
-                      where "<CARGO_TARGET>" is replaced with the "CargoTarget"
-                      variable value and "<CARGO_PROFILE>" is replaced with the
-                      value from the "CargoProfile" variable. This can also
-                      be overridden manually with the "target-bin-dir" flag.
-  CargoTargetDir    = The path to the directory for the build artifacts, i.e.
-                      "target".
-  CargoProfile      = The cargo profile used to build the binaries
-                      (usually "debug" or "release").
-  Version           = The version for the installer. The default is the
-                      "Major.Minor.Fix" semantic versioning number of the Rust
-                      package.
--->
-
-<!--
   Please do not remove these pre-processor If-Else blocks. These are used with
   the `cargo wix` subcommand to automatically determine the installation
   destination for 32-bit versus 64-bit installers. Removal of these lines will
@@ -62,7 +33,7 @@
         Id='*'
         Name='Devoid Viewer'
         UpgradeCode='42131F52-0DFF-4B4C-868B-4656FD6F3F89'
-        Manufacturer='Fatih Cihan Hızlıkan'
+        Manufacturer='Fatih Cihan Hizlikan'
         Language='1033'
         Codepage='1252'
         Version='$(var.Version)'>
@@ -70,7 +41,7 @@
         <Package Id='*'
             Keywords='Installer'
             Description='Devoid Viewer: A minimalist, high-performance image viewer.'
-            Manufacturer='Fatih Cihan Hızlıkan'
+            Manufacturer='Fatih Cihan Hizlikan'
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
@@ -82,17 +53,12 @@
             Schedule='afterInstallInitialize'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
-        <!-- Cabinet embedded in the MSI; no DiskPrompt needed for a download installer -->
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes'/>
 
         <!-- Product icon shown in Add/Remove Programs -->
         <Icon Id='ProductICO' SourceFile='devoid.ico'/>
         <Property Id='ARPPRODUCTICON' Value='ProductICO'/>
 
-        <!-- Remove placeholder; set to real URL or remove entirely -->
-        <!-- <Property Id='ARPHELPLINK' Value='https://github.com/yourname/devoid-viewer'/> -->
-
-        <Property Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]'/>
         <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
@@ -152,7 +118,9 @@
                         </ProgId>
                     </Component>
 
-                    <!-- Desktop shortcut -->
+                    <!-- Desktop shortcut.
+                         CreateFolder on APPLICATIONFOLDER is the KeyPath — avoids
+                         any registry key collision with the FileAssociations component. -->
                     <Component Id='ApplicationShortcut' Guid='A1B2C3D4-E5F6-7890-ABCD-EF1234567890'>
                         <Shortcut Id='DesktopShortcut'
                             Directory='DesktopFolder'
@@ -161,13 +129,7 @@
                             WorkingDirectory='APPLICATIONFOLDER'
                             Icon='ProductICO'/>
                         <RemoveFolder Id='RemoveDesktopFolder' Directory='DesktopFolder' On='uninstall'/>
-                        <RegistryValue
-                            Root='HKCU'
-                            Key='Software\DevoidViewer'
-                            Name='DesktopShortcut'
-                            Type='integer'
-                            Value='1'
-                            KeyPath='yes'/>
+                        <CreateFolder Directory='APPLICATIONFOLDER' KeyPath='yes'/>
                     </Component>
 
                 </Directory>
@@ -177,7 +139,7 @@
             <Directory Id='DesktopFolder'/>
         </Directory>
 
-        <!-- Refresh shell icon cache after install/uninstall so file type icons appear immediately -->
+        <!-- Refresh shell icon cache so file type icons appear immediately -->
         <CustomAction
             Id='RefreshShellIcons'
             Directory='TARGETDIR'
