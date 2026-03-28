@@ -493,11 +493,16 @@ fn main() {
         .build().expect("event loop");
     let proxy = event_loop.create_proxy();
 
+    // Hide the window when an image is provided so the user never sees the
+    // intermediate unsized/gray state. We reveal it once the image is ready.
+    // When started without an image, show immediately as a drag-and-drop target.
+    let start_hidden = initial_path.is_some();
     let window = Arc::new(
         WindowBuilder::new()
             .with_title("Devoid Viewer")
             .with_inner_size(LogicalSize::new(init_w, init_h))
             .with_min_inner_size(LogicalSize::new(120u32, 80u32))
+            .with_visible(!start_hidden)
             .build(&event_loop).expect("window"),
     );
 
@@ -532,6 +537,7 @@ fn main() {
 
     let mut app     = App::new(msg_tx, msg_rx);
     let mut cursor  = (0.0f32, 0.0f32);
+    let mut shown   = !start_hidden;  // already visible when no image arg
 
     // Kick off the first image load on a background thread.
     // The window shows gray until it arrives via the normal WakeUp path.
@@ -554,6 +560,12 @@ fn main() {
                 } else if app.pending_center {
                     center_window(&window);
                     app.pending_center = false;
+                    // Reveal the window now: it is the correct size, centred,
+                    // and the next RedrawRequested will paint the image.
+                    if !shown {
+                        shown = true;
+                        window.set_visible(true);
+                    }
                 }
                 window.request_redraw();
             }
