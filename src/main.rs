@@ -91,7 +91,7 @@ struct App {
     preload_cache: HashMap<PathBuf, DecodedImage>,
     deleting:      bool,
 
-    // Window
+    // Window reveal
     pending_center: bool,
 }
 
@@ -138,22 +138,14 @@ impl App {
         std::thread::spawn(move || {
             let msg = match load_image(&path) {
                 Ok(img) => Msg::Loaded { path, image: img, mode },
-                Err(e)  => {
-                    // Temporary: log decode errors to file for diagnosis
-                    #[cfg(windows)]
-                    let _ = std::fs::write(
-                        std::env::temp_dir().join("devoid_load_err.txt"),
-                        format!("path: {:?}\nerror: {}\n", path, e)
-                    );
-                    Msg::Error { path, msg: e.to_string() }
-                }
+                Err(e)  => Msg::Error  { path, msg: e.to_string() },
             };
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
         });
     }
 
-    /// Store the image and start animation.
+    /// Store the image and kick off adjacent preloads.
     /// Returns `Some((w, h))` when the caller should resize the window.
     fn apply_image(
         &mut self,
@@ -168,8 +160,6 @@ impl App {
         self.current_image = Some(img);
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
-        // Update navigator again now that the image is confirmed loaded,
-        // then kick off speculative decodes for both neighbours.
         self.navigator.set_current(path);
         self.preload_adjacent(proxy);
         self.reset_animation();
@@ -411,7 +401,7 @@ fn show_error_dialog(msg: &str) {
 
 /// Returns the usable desktop area in logical pixels.
 /// On Windows uses `SPI_GETWORKAREA` (precise taskbar exclusion).
-/// Elsewhere uses 90% × 85% of the monitor size as a heuristic.
+/// Elsewhere uses 90 % × 85 % of the monitor size as a heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
     #[cfg(windows)]
     if let Some(wa) = windows_work_area(window) { return wa; }
@@ -462,32 +452,47 @@ fn center_window(window: &Window) {
     window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
 
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+/// Load the application icon from the embedded ICO file.
+/// Compiled in via `include_bytes!` — no runtime file path needed.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let bytes  = include_bytes!("../devoid.ico");
+    let img    = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico).ok()?;
+    let rgba   = img.into_rgba8();
+    let (w, h) = rgba.dimensions();
+    winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
+}
+
+/// Read only the file header for dimensions — no full decode.
+/// SVG is the exception: the full document must be parsed since there
+/// is no header-only path in usvg.
+fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
+    let ext = path.extension()?.to_ascii_lowercase();
+    if ext == "svg" {
+        let data = std::fs::read(path).ok()?;
+        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
+        let sz   = tree.size();
+        return Some((sz.width() as u32, sz.height() as u32));
+    }
+    let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    image::ImageReader::new(reader)
+        .with_guessed_format().ok()?
+        .into_dimensions().ok()
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let raw_arg = std::env::args().nth(1);
-
-    #[cfg(windows)]
-    {
-        let path = raw_arg.as_deref().map(std::path::Path::new);
-        let exists   = path.map(|p| p.exists());
-        let metadata = path.and_then(|p| std::fs::metadata(p).ok())
-                           .map(|m| format!("len={}", m.len()));
-        let log = format!(
-            "raw_arg:  {:?}\nexists:   {:?}\nmetadata: {:?}\n",
-            raw_arg, exists, metadata
-        );
-        let _ = std::fs::write(std::env::temp_dir().join("devoid_diag.txt"), log);
-    }
-
-    // Use the raw path directly — do not canonicalize (converts to \\?\ prefix
-    // which breaks the image crate) and do not filter by exists() since that
-    // may return false for temp paths in restricted directories.
-    let initial_path = raw_arg.map(PathBuf::from);
+    // Use the raw argument path directly — do not canonicalize.
+    // std::fs::canonicalize prepends \\?\ on Windows which breaks the image
+    // crate, and causes silent failures when opening files from archivers
+    // (7-Zip, WinRAR) that extract to a temp directory.
+    let initial_path = std::env::args().nth(1).map(PathBuf::from);
 
     // Probe the image header for dimensions — fast, no full decode.
-    // The window is sized correctly and shows gray immediately while the full
-    // decode runs on a background thread.
+    // The window is sized correctly and shows gray immediately while the
+    // full decode runs on a background thread.
     let (init_w, init_h) = initial_path.as_deref()
         .and_then(image_size_hint)
         .unwrap_or((800, 600));
@@ -498,7 +503,7 @@ fn main() {
 
     // On Windows, the taskbar thumbnail close button sends WM_SYSCOMMAND/SC_CLOSE
     // which winit 0.29 does not translate into CloseRequested. Re-post it as
-    // WM_CLOSE, which winit does handle, so both close paths behave identically.
+    // WM_CLOSE so both close paths reach the same CloseRequested handler.
     #[cfg(windows)]
     el_builder.with_msg_hook(|msg| {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -518,9 +523,10 @@ fn main() {
     let event_loop = el_builder.build().expect("event loop");
     let proxy      = event_loop.create_proxy();
 
-    // Hide the window when an image is provided — reveal it once the image is
-    // ready so the user sees the correct content on first appearance.
-    // When started without an image, show immediately as a drag-and-drop target.
+    // Hide the window when an image argument is provided — reveal it once
+    // the image is ready so the user sees it appear at the correct size and
+    // position. When started with no argument show immediately as a
+    // drag-and-drop target.
     let start_hidden = initial_path.is_some();
 
     let window = Arc::new(
@@ -563,7 +569,6 @@ fn main() {
     let mut app   = App::new(msg_tx, msg_rx);
     let mut shown = !start_hidden;
 
-    // Kick off the first image load on a background thread.
     if let Some(path) = initial_path {
         app.open_image(path, OpenMode::FirstImage, &proxy);
     }
@@ -580,9 +585,9 @@ fn main() {
                     let (cw, ch) = clamp_to_work_area(iw, ih, &window);
                     let _ = window.request_inner_size(LogicalSize::new(cw, ch));
                     app.pending_center = true;
-                    // Send ourselves another WakeUp so the pending_center branch
-                    // runs even when no preload threads fire a second WakeUp
-                    // (e.g. a single image in a temp folder from an archiver).
+                    // Self-WakeUp guarantees the pending_center branch runs
+                    // even when no preload threads fire a second WakeUp —
+                    // e.g. a single image in an archiver's temp folder.
                     let _ = proxy.send_event(WakeUp);
                 } else if app.pending_center {
                     center_window(&window);
@@ -603,8 +608,8 @@ fn main() {
 
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
-                    // Background threads keep the process alive after elwt.exit().
-                    // Terminate immediately — there is no state to save.
+                    // Background threads hold channel senders and delay normal
+                    // exit. Terminate immediately — there is no state to save.
                     std::process::exit(0);
                 }
 
@@ -612,7 +617,6 @@ fn main() {
 
                 WindowEvent::DroppedFile(path) => {
                     if loader::is_supported(&path) {
-                        let path = std::fs::canonicalize(&path).unwrap_or(path);
                         app.open_image(path, OpenMode::Navigate, &proxy);
                         window.request_redraw();
                     }
@@ -666,32 +670,4 @@ fn main() {
             _ => {}
         }
     }).expect("event loop error");
-}
-
-// ── Utilities ─────────────────────────────────────────────────────────────────
-
-/// Load the application icon from the embedded ico file.
-/// `devoid.ico` is compiled in via `include_bytes!` — no runtime file path needed.
-fn load_window_icon() -> Option<winit::window::Icon> {
-    let bytes = include_bytes!("../devoid.ico");
-    let img   = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico).ok()?;
-    let rgba  = img.into_rgba8();
-    let (w, h) = rgba.dimensions();
-    winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
-}
-
-/// Read only the file header for dimensions — no full decode.
-/// SVG is an exception: the full document is parsed since there is no header-only path.
-fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
-    let ext = path.extension()?.to_ascii_lowercase();
-    if ext == "svg" {
-        let data = std::fs::read(path).ok()?;
-        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
-        let sz   = tree.size();
-        return Some((sz.width() as u32, sz.height() as u32));
-    }
-    let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
-    image::ImageReader::new(reader)
-        .with_guessed_format().ok()?
-        .into_dimensions().ok()
 }

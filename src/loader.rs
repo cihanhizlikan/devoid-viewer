@@ -1,6 +1,6 @@
 //! loader.rs — Image decoding for all supported formats.
 //!
-//! Returns `DecodedImage` — zero conversion needed in main.rs.
+//! Returns `DecodedImage` directly — no conversion needed in main.rs.
 //!
 //! | Format               | Crate                          |
 //! |----------------------|--------------------------------|
@@ -14,7 +14,7 @@ use std::path::Path;
 
 pub type LoadResult = Result<DecodedImage, Box<dyn std::error::Error + Send + Sync>>;
 
-// ── Public types (shared with main.rs) ───────────────────────────────────────
+// ── Public types ──────────────────────────────────────────────────────────────
 
 /// One animation frame — straight RGBA8, row-major.
 #[derive(Clone, Debug)]
@@ -23,7 +23,7 @@ pub struct Frame {
     pub delay_ms: u32,   // 0 for non-animated formats
 }
 
-/// A decoded image: one or more frames sharing the same dimensions.
+/// A decoded image: one or more frames sharing the same canvas dimensions.
 #[derive(Clone, Debug)]
 pub struct DecodedImage {
     pub frames: Vec<Frame>,
@@ -164,7 +164,7 @@ fn load_svg(path: &Path) -> LoadResult {
         .ok_or("Failed to allocate SVG pixmap")?;
     resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
 
-    // Unpremultiply: tiny-skia premultiplied → straight RGBA
+    // Unpremultiply: tiny-skia produces premultiplied RGBA, we need straight.
     let pixels: Vec<u8> = pixmap.pixels().iter().flat_map(|p| {
         let a = p.alpha();
         if a == 0 { [0u8, 0, 0, 0] } else {
