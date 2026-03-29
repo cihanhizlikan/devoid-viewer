@@ -138,7 +138,15 @@ impl App {
         std::thread::spawn(move || {
             let msg = match load_image(&path) {
                 Ok(img) => Msg::Loaded { path, image: img, mode },
-                Err(e)  => Msg::Error  { path, msg: e.to_string() },
+                Err(e)  => {
+                    // Temporary: log decode errors to file for diagnosis
+                    #[cfg(windows)]
+                    let _ = std::fs::write(
+                        std::env::temp_dir().join("devoid_load_err.txt"),
+                        format!("path: {:?}\nerror: {}\n", path, e)
+                    );
+                    Msg::Error { path, msg: e.to_string() }
+                }
             };
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
@@ -457,9 +465,25 @@ fn center_window(window: &Window) {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    let initial_path = std::env::args().nth(1)
-        .map(PathBuf::from)
-        .and_then(|p| std::fs::canonicalize(&p).ok().or(Some(p)));
+    let raw_arg = std::env::args().nth(1);
+
+    #[cfg(windows)]
+    {
+        let path = raw_arg.as_deref().map(std::path::Path::new);
+        let exists   = path.map(|p| p.exists());
+        let metadata = path.and_then(|p| std::fs::metadata(p).ok())
+                           .map(|m| format!("len={}", m.len()));
+        let log = format!(
+            "raw_arg:  {:?}\nexists:   {:?}\nmetadata: {:?}\n",
+            raw_arg, exists, metadata
+        );
+        let _ = std::fs::write(std::env::temp_dir().join("devoid_diag.txt"), log);
+    }
+
+    // Use the raw path directly — do not canonicalize (converts to \\?\ prefix
+    // which breaks the image crate) and do not filter by exists() since that
+    // may return false for temp paths in restricted directories.
+    let initial_path = raw_arg.map(PathBuf::from);
 
     // Probe the image header for dimensions — fast, no full decode.
     // The window is sized correctly and shows gray immediately while the full
@@ -556,6 +580,10 @@ fn main() {
                     let (cw, ch) = clamp_to_work_area(iw, ih, &window);
                     let _ = window.request_inner_size(LogicalSize::new(cw, ch));
                     app.pending_center = true;
+                    // Send ourselves another WakeUp so the pending_center branch
+                    // runs even when no preload threads fire a second WakeUp
+                    // (e.g. a single image in a temp folder from an archiver).
+                    let _ = proxy.send_event(WakeUp);
                 } else if app.pending_center {
                     center_window(&window);
                     app.pending_center = false;
