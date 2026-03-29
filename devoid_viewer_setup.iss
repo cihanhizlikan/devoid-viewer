@@ -32,13 +32,14 @@ DisableProgramGroupPage=yes
 OutputDir=Output
 OutputBaseFilename=DevoidViewer_Setup
 SetupIconFile=devoid.ico
+UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 
 ; The installer is 64-bit aware but installs a native binary.
 ; Force 64-bit install path on 64-bit Windows.
-ArchitecturesInstallIn64BitMode=x64 arm64
+ArchitecturesInstallIn64BitMode=x64compatible arm64
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -109,4 +110,4 @@ Filename: "{sys}\ie4uinit.exe"; Parameters: "-ClearIconCache"; \
 
 [UninstallRun]
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-ClearIconCache"; \
-    Flags: runhidden nowait
+    RunOnceId: "RefreshIcons"; Flags: runhidden nowait
