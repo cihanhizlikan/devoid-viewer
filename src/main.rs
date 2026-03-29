@@ -574,7 +574,11 @@ fn main() {
             }
 
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => elwt.exit(),
+                WindowEvent::CloseRequested => {
+                    // Background threads keep the process alive after elwt.exit().
+                    // Terminate immediately — there is no state to save.
+                    std::process::exit(0);
+                }
 
                 WindowEvent::Resized(_) => window.request_redraw(),
 
@@ -609,7 +613,7 @@ fn main() {
                             app.request_delete(&proxy);
                         }
                     }
-                    KeyCode::KeyQ | KeyCode::Escape => elwt.exit(),
+                    KeyCode::KeyQ | KeyCode::Escape => std::process::exit(0),
                     _ => {}
                 },
 
