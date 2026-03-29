@@ -1,5 +1,6 @@
 # Added by Devoid Viewer build process
 /target/
+/Output/
 
 # IDE folders
 .vscode/
