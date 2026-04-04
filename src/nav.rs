@@ -75,6 +75,14 @@ impl DirNavigator {
         }
     }
 
+    /// Update a path in the sibling list after a rename.
+    /// Preserves the current index so navigation is unaffected.
+    pub fn rename(&mut self, old_path: &Path, new_path: PathBuf) {
+        if let Some(entry) = self.files.iter_mut().find(|p| p.as_path() == old_path) {
+            *entry = new_path;
+        }
+    }
+
     /// The currently active path (may differ from the last `set_current` call
     /// if `remove` was called).
     pub fn current(&self) -> Option<&PathBuf> {

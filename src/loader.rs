@@ -78,13 +78,13 @@ pub fn is_supported(path: &Path) -> bool {
 pub fn load_image(path: &Path) -> LoadOutcome {
     let ext = file_ext(path);
 
-    if let Ok(img) = load_by_ext(&ext, path) {
+    if let Ok(img) = load_by_ext(&ext, path, false) {
         return LoadOutcome::Ok(img);
     }
 
     match sniff_format(path) {
         Some(actual) if actual != ext => {
-            match load_by_ext(&actual, path) {
+            match load_by_ext(&actual, path, true) {
                 Ok(img) => LoadOutcome::WrongExtension(img, actual),
                 Err(e)  => LoadOutcome::Unsupported(e.to_string()),
             }
@@ -109,13 +109,17 @@ fn file_ext(path: &Path) -> String {
 }
 
 /// Dispatch to the correct decoder based on `ext`.
-/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to `load_standard`.
-fn load_by_ext(ext: &str, path: &Path) -> Result<DecodedImage, BoxError> {
+/// `guessed` should be true when called from the fallback path — it causes
+/// standard raster formats to use header-based detection instead of trusting
+/// the file extension, which may be wrong.
+/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to load_standard*.
+fn load_by_ext(ext: &str, path: &Path, guessed: bool) -> Result<DecodedImage, BoxError> {
     match ext {
         "svg" => load_svg(path),
         "jxl" => load_jxl(path),
         "gif" => load_gif(path),
-        _     => load_standard(path),
+        _ if guessed => load_standard_guessed(path),
+        _            => load_standard(path),
     }
 }
 
@@ -176,9 +180,20 @@ fn f32_to_u8(v: f32) -> u8 {
 // ── Decoders ──────────────────────────────────────────────────────────────────
 
 fn load_standard(path: &Path) -> Result<DecodedImage, BoxError> {
-    // Use with_guessed_format() so decoding is driven by the file header,
-    // not the extension. This is the correct path for both normal files and
-    // the wrong-extension fallback triggered by sniff_format().
+    // Decode using the format implied by the file extension.
+    // This is the fast path — the extension is trusted on first attempt.
+    // If it fails, load_image() will sniff the header and call load_by_ext()
+    // with the correct extension, at which point load_standard_guessed() is
+    // used instead so the actual header drives the decoder.
+    let img   = image::open(path)?;
+    let rgba  = img.into_rgba8();
+    let (w, h) = rgba.dimensions();
+    Ok(DecodedImage::single(rgba.into_raw(), w, h))
+}
+
+/// Decode by reading the file header to determine the format, ignoring the
+/// extension entirely. Used by the wrong-extension fallback path.
+fn load_standard_guessed(path: &Path) -> Result<DecodedImage, BoxError> {
     let file   = std::fs::File::open(path)?;
     let reader = image::ImageReader::new(std::io::BufReader::new(file))
         .with_guessed_format()?;

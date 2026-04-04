@@ -8,9 +8,11 @@
 //! - Async image deletion
 //! - Double-click to maximise / restore (unified with title-bar button)
 //! - F / F11 to toggle borderless fullscreen; Escape to exit fullscreen
+//! - Mouse-wheel / trackpad navigation between images
 //! - Graceful extension-mismatch recovery with optional rename
 //! - Archiver-safe path handling (no canonicalize / no \\?\ prefix)
 //! - Exact taskbar-excluded work-area clamping on Windows
+//! - Filename shown in the title bar
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -20,7 +22,7 @@ mod nav;
 use std::{
     collections::HashMap,
     num::NonZeroU32,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -31,7 +33,10 @@ use nav::DirNavigator;
 use softbuffer::Surface;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
-    event::{ElementState, Event, KeyEvent, MouseButton, WindowEvent},
+    event::{
+        ElementState, Event, KeyEvent, MouseButton,
+        MouseScrollDelta, TouchPhase, WindowEvent,
+    },
     event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowBuilder},
@@ -43,6 +48,9 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 
 /// Background colour (grey) for the blank state and transparent image regions.
 const BG: u8 = 42;
+
+/// Application name shown in the title bar when no image is open.
+const APP_NAME: &str = "Devoid Viewer";
 
 /// Maximum gap between two left-clicks that counts as a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
@@ -73,8 +81,8 @@ enum Msg {
     },
     /// File is not a recognised image even after header sniffing.
     Unsupported {
-        path: PathBuf,
-        msg:  String,
+        path:   PathBuf,
+        reason: String,
     },
     /// Async deletion finished.
     Deleted {
@@ -101,19 +109,16 @@ struct View<'a> {
 // ── DrainResult ───────────────────────────────────────────────────────────────
 
 /// Everything the event loop needs to know after one drain of the message
-/// channel. Using a named struct instead of a tuple keeps call-sites readable.
+/// channel. A named struct keeps call-sites readable.
 #[derive(Default)]
 struct DrainResult {
     /// Non-None when the first image loaded — resize the window to these dims.
     resize_to:    Option<(u32, u32)>,
-    /// True when a load failed — the hidden window must be shown before the
-    /// blocking error dialog so we never leave an invisible process running.
-    need_reveal:  bool,
-    /// Some when a file decoded under the wrong extension — offer a rename
-    /// after the drain loop so the dialog doesn't block the drain.
-    rename_offer: Option<(PathBuf, String)>,
-    /// Non-None when any non-preload error message should be shown.
+    /// Non-None when any error occurred — reveal the window then show this.
     error_msg:    Option<String>,
+    /// Non-None when a file decoded under the wrong extension — offer a rename
+    /// after the drain loop so the dialog does not block the drain.
+    rename_offer: Option<(PathBuf, String)>,
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -150,19 +155,21 @@ struct App {
     deleting:      bool,
 
     // ── Window state ──────────────────────────────────────────────────────────
-    /// True while waiting for a requested resize to land before revealing the
-    /// window. The event loop sends itself a WakeUp after requesting the resize;
+    /// True while waiting for a resize to land before revealing the window.
+    /// The event loop sends itself a WakeUp after requesting the resize;
     /// on the following WakeUp it centres and reveals the window.
-    pending_center:    bool,
-    /// Window geometry saved before entering managed-maximise, so we can
-    /// restore the exact size and position.
-    pre_maximize:      Option<(PhysicalSize<u32>, PhysicalPosition<i32>)>,
+    pending_center: bool,
+    /// Physical inner size saved before entering managed-maximise so we can
+    /// restore it exactly. The position is not saved — we always centre on
+    /// restore, which is simpler and avoids off-screen placement when the
+    /// user has moved the window to a secondary monitor.
+    pre_maximize:   Option<PhysicalSize<u32>>,
     /// True when the window is in our managed-maximise state.
-    maximized:         bool,
+    maximized:      bool,
     /// True when the window is in borderless fullscreen.
-    fullscreen:        bool,
+    fullscreen:     bool,
     /// Timestamp of the last left-click, for double-click detection.
-    last_click:        Option<Instant>,
+    last_click:     Option<Instant>,
 }
 
 impl App {
@@ -194,6 +201,13 @@ impl App {
         })
     }
 
+    /// The filename component of the current path, for the title bar and dialogs.
+    fn current_filename(&self) -> Option<String> {
+        self.current_path.as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+    }
+
     // ── Window mode ───────────────────────────────────────────────────────────
 
     /// Record a left-click and return `true` when it completes a double-click.
@@ -206,31 +220,25 @@ impl App {
         is_double
     }
 
-    /// Toggle between our managed-maximise and the saved window geometry.
-    /// Saves the logical inner size (divided by scale factor) so the restored
-    /// size is pixel-perfect regardless of DPI. Always centres on restore since
-    /// restoring the old position would place it off-screen if the user had
-    /// moved the window to a secondary monitor before maximising.
-    /// Independent of fullscreen.
+    /// Toggle between our managed-maximise and the saved window size.
+    ///
+    /// Saves the physical inner size before maximising and restores it
+    /// exactly on the next toggle. Always centres on restore. Independent
+    /// of fullscreen — double-click in fullscreen is a no-op.
     fn toggle_maximize(&mut self, window: &Window) {
+        if self.fullscreen { return; }
+
         if self.maximized {
             window.set_maximized(false);
-            if let Some((size, _)) = self.pre_maximize.take() {
-                let _ = window.request_inner_size(LogicalSize::new(size.width, size.height));
-                center_window(window);
+            if let Some(size) = self.pre_maximize.take() {
+                // request_inner_size is asynchronous — pending_center ensures
+                // center_window() fires after the resize has actually landed.
+                let _ = window.request_inner_size(size);
+                self.pending_center = true;
             }
             self.maximized = false;
         } else {
-            // Save the current inner size in logical pixels so it round-trips
-            // correctly through request_inner_size on any DPI setting.
-            let sf   = window.scale_factor();
-            let phys = window.inner_size();
-            let logical = PhysicalSize::new(
-                (phys.width  as f64 / sf) as u32,
-                (phys.height as f64 / sf) as u32,
-            );
-            self.pre_maximize = Some((logical, window.outer_position()
-                .unwrap_or(PhysicalPosition::new(0, 0))));
+            self.pre_maximize = Some(window.inner_size());
             window.set_maximized(true);
             self.maximized = true;
         }
@@ -239,11 +247,9 @@ impl App {
     /// Toggle borderless fullscreen on the current monitor.
     /// Independent of the managed-maximise state.
     fn toggle_fullscreen(&mut self, window: &Window) {
-        if self.fullscreen {
-            window.set_fullscreen(None);
-        } else {
-            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
+        let target = if self.fullscreen { None }
+                     else { Some(Fullscreen::Borderless(None)) };
+        window.set_fullscreen(target);
         self.fullscreen = !self.fullscreen;
     }
 
@@ -280,8 +286,8 @@ impl App {
                     Msg::Loaded { path, image: img, mode },
                 LoadOutcome::WrongExtension(img, ext) =>
                     Msg::WrongExtension { path, image: img, mode, correct_ext: ext },
-                LoadOutcome::Unsupported(e) =>
-                    Msg::Unsupported { path, msg: e },
+                LoadOutcome::Unsupported(reason) =>
+                    Msg::Unsupported { path, reason },
             };
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
@@ -289,7 +295,7 @@ impl App {
     }
 
     /// Install `img` as the current display, kick off neighbour preloads,
-    /// reset animation. Returns `Some((w, h))` when a window resize is needed.
+    /// and reset animation. Returns `Some((w, h))` when a resize is needed.
     fn apply_image(
         &mut self,
         path: PathBuf,
@@ -384,7 +390,13 @@ impl App {
         });
     }
 
-    fn on_deleted(&mut self, path: PathBuf, result: Result<(), String>, proxy: &Proxy) {
+    fn on_deleted(
+        &mut self,
+        path:   PathBuf,
+        result: Result<(), String>,
+        proxy:  &Proxy,
+        dr:     &mut DrainResult,
+    ) {
         self.deleting = false;
         match result {
             Ok(()) => {
@@ -395,7 +407,7 @@ impl App {
                     None       => self.clear_image(),
                 }
             }
-            Err(e) => show_error_dialog(&format!("Delete failed:\n{e}")),
+            Err(e) => dr.error_msg = Some(format!("Delete failed:\n{e}")),
         }
     }
 
@@ -403,8 +415,8 @@ impl App {
 
     /// Non-blockingly drain all pending messages from the channel.
     ///
-    /// Error dialogs and rename offers are returned in `DrainResult` rather
-    /// than shown inside the loop, so the drain itself never blocks.
+    /// All blocking side-effects (dialogs, rename) are returned in `DrainResult`
+    /// rather than performed inside the loop, so the drain itself never blocks.
     fn drain_messages(&mut self, proxy: &Proxy) -> DrainResult {
         let mut dr = DrainResult::default();
 
@@ -415,28 +427,23 @@ impl App {
                 }
                 Msg::Loaded { path, image, mode } => {
                     if self.is_active_load(&path) {
-                        if let Some(dims) = self.apply_image(path, image, mode, proxy) {
-                            dr.resize_to = Some(dims);
-                        }
+                        dr.resize_to = self.apply_image(path, image, mode, proxy);
                     }
                 }
                 Msg::WrongExtension { path, image, mode, correct_ext } => {
                     if self.is_active_load(&path) {
-                        if let Some(dims) = self.apply_image(path.clone(), image, mode, proxy) {
-                            dr.resize_to = Some(dims);
-                        }
+                        dr.resize_to = self.apply_image(path.clone(), image, mode, proxy);
                         dr.rename_offer = Some((path, correct_ext));
                     }
                 }
-                Msg::Unsupported { path, msg } => {
+                Msg::Unsupported { path, reason } => {
                     if self.is_active_load(&path) {
                         self.loading_path = None;
-                        dr.need_reveal = true;
-                        dr.error_msg   = Some(format!("Cannot open image:\n{msg}"));
+                        dr.error_msg = Some(format!("Cannot open image:\n{reason}"));
                     }
                 }
                 Msg::Deleted { path, result } => {
-                    self.on_deleted(path, result, proxy);
+                    self.on_deleted(path, result, proxy, &mut dr);
                 }
             }
         }
@@ -446,8 +453,16 @@ impl App {
 
     /// Whether `path` is the file currently being decoded.
     #[inline]
-    fn is_active_load(&self, path: &PathBuf) -> bool {
-        self.loading_path.as_deref() == Some(path.as_path())
+    fn is_active_load(&self, path: &Path) -> bool {
+        self.loading_path.as_deref() == Some(path)
+    }
+
+    /// Update `current_path` and the navigator after a successful rename.
+    fn apply_rename(&mut self, old_path: &Path, new_path: PathBuf) {
+        if self.current_path.as_deref() == Some(old_path) {
+            self.current_path = Some(new_path.clone());
+        }
+        self.navigator.rename(old_path, new_path);
     }
 }
 
@@ -553,14 +568,9 @@ fn show_error_dialog(msg: &str) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             MessageBoxW, MB_ICONERROR, MB_OK,
         };
-        unsafe {
-            MessageBoxW(
-                0,
-                to_wide(msg).as_ptr(),
-                to_wide("Devoid Viewer").as_ptr(),
-                MB_ICONERROR | MB_OK,
-            );
-        }
+        let text = to_wide(msg);
+        let cap  = to_wide(APP_NAME);
+        unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK); }
     }
     #[cfg(not(windows))]
     { eprintln!("Error: {msg}"); }
@@ -569,16 +579,16 @@ fn show_error_dialog(msg: &str) {
 /// Offer to rename `path` to use `correct_ext`.
 ///
 /// Skips the prompt silently when the parent directory is confirmed read-only.
-/// On rename failure shows an error dialog.
-fn offer_rename(path: &std::path::Path, correct_ext: &str) {
-    // Attempt to determine write access from the parent directory's metadata.
-    // If we can't tell, we optimistically offer the rename — the rename itself
-    // will fail gracefully if the file system is actually read-only.
+/// Returns `Some(new_path)` when the rename succeeded, `None` otherwise.
+fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
+    // Skip silently when the parent is read-only. If we cannot determine
+    // write access we offer the rename optimistically — the filesystem will
+    // reject it and we show an error.
     let parent_readonly = path.parent()
         .and_then(|p| std::fs::metadata(p).ok())
         .map(|m| m.permissions().readonly())
         .unwrap_or(false);
-    if parent_readonly { return; }
+    if parent_readonly { return None; }
 
     let new_path = path.with_extension(correct_ext);
 
@@ -597,22 +607,22 @@ fn offer_rename(path: &std::path::Path, correct_ext: &str) {
              Rename to:\n{}\n\nRename?",
             new_path.display()
         );
+        let text   = to_wide(&prompt);
+        let cap    = to_wide("Wrong Extension");
         let answer = unsafe {
-            MessageBoxW(
-                0,
-                to_wide(&prompt).as_ptr(),
-                to_wide("Wrong Extension").as_ptr(),
-                MB_YESNO | MB_ICONQUESTION,
-            )
+            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONQUESTION)
         };
         if answer == IDYES {
-            if let Err(e) = std::fs::rename(path, &new_path) {
-                show_error_dialog(&format!("Could not rename file:\n{e}"));
+            match std::fs::rename(path, &new_path) {
+                Ok(())  => return Some(new_path),
+                Err(e)  => show_error_dialog(&format!("Could not rename file:\n{e}")),
             }
         }
     }
     #[cfg(not(windows))]
     { let _ = new_path; }
+
+    None
 }
 
 // ── Window helpers ────────────────────────────────────────────────────────────
@@ -675,6 +685,28 @@ fn center_window(window: &Window) {
     window.set_outer_position(PhysicalPosition::new(x, y));
 }
 
+/// Set the window title to `"filename — Devoid Viewer"`, or just
+/// `"Devoid Viewer"` when `filename` is `None`.
+fn update_title(window: &Window, filename: Option<&str>) {
+    match filename {
+        Some(name) => window.set_title(&format!("{name} \u{2014} {APP_NAME}")),
+        None       => window.set_title(APP_NAME),
+    }
+}
+
+/// Interpret a scroll delta as a navigation direction.
+/// Returns `true` for forward (next image) and `false` for backward (previous).
+/// Convention: scroll down or right → next, scroll up or left → previous.
+#[inline]
+fn scroll_is_forward(delta: &MouseScrollDelta) -> bool {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) =>
+            if *y != 0.0 { *y < 0.0 } else { *x > 0.0 },
+        MouseScrollDelta::PixelDelta(pos) =>
+            if pos.y != 0.0 { pos.y < 0.0 } else { pos.x > 0.0 },
+    }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /// Decode the application icon embedded at compile time and return a winit Icon.
@@ -688,7 +720,7 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 
 /// Read only enough of the file to determine its pixel dimensions.
 /// For most formats this is just the header; SVG requires a full parse.
-fn image_size_hint(path: &std::path::Path) -> Option<(u32, u32)> {
+fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
     let ext = path.extension()?.to_ascii_lowercase();
     if ext == "svg" {
         let data = std::fs::read(path).ok()?;
@@ -717,12 +749,10 @@ fn paint_background(surface: &mut Surface<Arc<Window>, Arc<Window>>, window: &Wi
     }
 }
 
-/// Make the window visible if it isn't already and return `true`.
+/// Make the window visible if it isn't already. Returns `true`.
 #[inline]
 fn ensure_visible(window: &Window, shown: bool) -> bool {
-    if !shown {
-        window.set_visible(true);
-    }
+    if !shown { window.set_visible(true); }
     true
 }
 
@@ -763,9 +793,8 @@ fn main() {
     // SC_MAXIMIZE (title-bar double-click and the maximise button)
     //   Suppress OS handling so `toggle_maximize()` is the single code path
     //   for maximise — giving unified behaviour with the client-area
-    //   double-click.  The title-bar double-click also fires `MouseInput`
-    //   in winit, so suppressing SC_MAXIMIZE here is sufficient; our
-    //   `MouseInput` handler will call `toggle_maximize()`.
+    //   double-click. The title-bar double-click also fires `MouseInput`
+    //   in winit, so suppressing SC_MAXIMIZE here is sufficient.
     #[cfg(windows)]
     el_builder.with_msg_hook(|msg| {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -776,7 +805,7 @@ fn main() {
             if (*msg).message == WM_SYSCOMMAND {
                 match ((*msg).wParam & 0xFFF0) as u32 {
                     SC_CLOSE    => { PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0); }
-                    SC_MAXIMIZE => { return true; }  // suppress OS; MouseInput fires instead
+                    SC_MAXIMIZE => { return true; }  // suppress; MouseInput fires instead
                     _           => {}
                 }
             }
@@ -794,7 +823,7 @@ fn main() {
 
     let window = Arc::new(
         WindowBuilder::new()
-            .with_title("Devoid Viewer")
+            .with_title(APP_NAME)
             .with_window_icon(load_window_icon())
             .with_inner_size(LogicalSize::new(init_w, init_h))
             .with_min_inner_size(LogicalSize::new(120u32, 80u32))
@@ -832,7 +861,7 @@ fn main() {
                 let dr = app.drain_messages(&proxy);
 
                 if let Some((iw, ih)) = dr.resize_to {
-                    // Issue the resize, then send a self-WakeUp.  The window
+                    // Issue the resize, then send a self-WakeUp. The window
                     // size change is asynchronous; `pending_center` ensures we
                     // wait for it to land before centering and revealing.
                     let (cw, ch) = clamp_to_work_area(iw, ih, &window);
@@ -845,19 +874,23 @@ fn main() {
                     shown = ensure_visible(&window, shown);
                 }
 
+                // Update the title bar whenever the displayed image may have changed.
+                update_title(&window, app.current_filename().as_deref());
+
                 // Reveal before showing a blocking error dialog so we never
                 // leave an invisible process alive in the background.
-                if dr.need_reveal {
-                    shown = ensure_visible(&window, shown);
-                }
                 if let Some(msg) = dr.error_msg {
+                    shown = ensure_visible(&window, shown);
                     show_error_dialog(&msg);
                 }
 
                 // Rename offer shown after the drain so the dialog is never
                 // blocking inside the tight drain loop.
-                if let Some((path, ext)) = dr.rename_offer {
-                    offer_rename(&path, &ext);
+                if let Some((old_path, correct_ext)) = dr.rename_offer {
+                    if let Some(new_path) = offer_rename(&old_path, &correct_ext) {
+                        app.apply_rename(&old_path, new_path);
+                        update_title(&window, app.current_filename().as_deref());
+                    }
                 }
 
                 window.request_redraw();
@@ -889,8 +922,25 @@ fn main() {
                 } => {
                     if app.register_click() {
                         app.toggle_maximize(&window);
+                        // If toggle_maximize requested a resize (restore path),
+                        // send a self-WakeUp so centering fires after it lands.
+                        if app.pending_center {
+                            let _ = proxy.send_event(WakeUp);
+                        }
                         window.request_redraw();
                     }
+                }
+
+                // Scroll wheel / trackpad: down or right → next, up or left → previous.
+                // LineDelta (physical wheels) and PixelDelta (trackpads) are both handled.
+                // TouchPhase::Cancelled is ignored; momentum/inertia phases are not filtered
+                // because winit reports standard mouse-wheel events as TouchPhase::Moved
+                // regardless of device type.
+                WindowEvent::MouseWheel { delta, phase, .. }
+                    if phase != TouchPhase::Cancelled =>
+                {
+                    app.navigate(scroll_is_forward(&delta), &proxy);
+                    window.request_redraw();
                 }
 
                 WindowEvent::DroppedFile(path) => {
@@ -917,12 +967,10 @@ fn main() {
                     }
                     // Deletion
                     KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
-                        let fname = app.current_path.as_deref()
-                            .and_then(|p| p.file_name())
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        if confirm_delete_dialog(&fname) {
-                            app.request_delete(&proxy);
+                        if let Some(fname) = app.current_filename() {
+                            if confirm_delete_dialog(&fname) {
+                                app.request_delete(&proxy);
+                            }
                         }
                     }
                     // Fullscreen
