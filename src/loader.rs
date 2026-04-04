@@ -176,8 +176,14 @@ fn f32_to_u8(v: f32) -> u8 {
 // ── Decoders ──────────────────────────────────────────────────────────────────
 
 fn load_standard(path: &Path) -> Result<DecodedImage, BoxError> {
-    let img   = image::open(path)?;
-    let rgba  = img.into_rgba8();
+    // Use with_guessed_format() so decoding is driven by the file header,
+    // not the extension. This is the correct path for both normal files and
+    // the wrong-extension fallback triggered by sniff_format().
+    let file   = std::fs::File::open(path)?;
+    let reader = image::ImageReader::new(std::io::BufReader::new(file))
+        .with_guessed_format()?;
+    let img    = reader.decode()?;
+    let rgba   = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
 }

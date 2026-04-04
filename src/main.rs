@@ -207,18 +207,29 @@ impl App {
     }
 
     /// Toggle between our managed-maximise and the saved window geometry.
-    /// Saves both size and position so the window is restored exactly where
-    /// the user left it, not recentred. Independent of fullscreen.
+    /// Saves the logical inner size (divided by scale factor) so the restored
+    /// size is pixel-perfect regardless of DPI. Always centres on restore since
+    /// restoring the old position would place it off-screen if the user had
+    /// moved the window to a secondary monitor before maximising.
+    /// Independent of fullscreen.
     fn toggle_maximize(&mut self, window: &Window) {
         if self.maximized {
             window.set_maximized(false);
-            if let Some((size, pos)) = self.pre_maximize.take() {
+            if let Some((size, _)) = self.pre_maximize.take() {
                 let _ = window.request_inner_size(LogicalSize::new(size.width, size.height));
-                window.set_outer_position(pos);
+                center_window(window);
             }
             self.maximized = false;
         } else {
-            self.pre_maximize = Some((window.inner_size(), window.outer_position()
+            // Save the current inner size in logical pixels so it round-trips
+            // correctly through request_inner_size on any DPI setting.
+            let sf   = window.scale_factor();
+            let phys = window.inner_size();
+            let logical = PhysicalSize::new(
+                (phys.width  as f64 / sf) as u32,
+                (phys.height as f64 / sf) as u32,
+            );
+            self.pre_maximize = Some((logical, window.outer_position()
                 .unwrap_or(PhysicalPosition::new(0, 0))));
             window.set_maximized(true);
             self.maximized = true;
