@@ -78,13 +78,13 @@ pub fn is_supported(path: &Path) -> bool {
 pub fn load_image(path: &Path) -> LoadOutcome {
     let ext = file_ext(path);
 
-    if let Ok(img) = load_by_ext(&ext, path, false) {
+    if let Ok(img) = load_by_ext(&ext, path, DecodeStrategy::ByExtension) {
         return LoadOutcome::Ok(img);
     }
 
     match sniff_format(path) {
         Some(actual) if actual != ext => {
-            match load_by_ext(&actual, path, true) {
+            match load_by_ext(&actual, path, DecodeStrategy::ByContent) {
                 Ok(img) => LoadOutcome::WrongExtension(img, actual),
                 Err(e)  => LoadOutcome::Unsupported(e.to_string()),
             }
@@ -92,7 +92,8 @@ pub fn load_image(path: &Path) -> LoadOutcome {
         Some(_) => {
             // Sniffed the same extension but it still failed — the file is
             // corrupt or truncated.
-            LoadOutcome::Unsupported(format!("Failed to decode {ext} file"))
+            let desc = if ext.is_empty() { "file".into() } else { format!(".{ext} file") };
+            LoadOutcome::Unsupported(format!("Failed to decode {desc}"))
         }
         None => LoadOutcome::Unsupported("Not a recognised image format".into()),
     }
@@ -104,34 +105,45 @@ pub fn load_image(path: &Path) -> LoadOutcome {
 fn file_ext(path: &Path) -> String {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_ascii_lowercase())
+        .map(str::to_ascii_lowercase)
         .unwrap_or_default()
 }
 
+/// Whether the standard raster decoder should trust the file extension or
+/// sniff the header to pick the format.
+#[derive(Clone, Copy)]
+enum DecodeStrategy {
+    /// Trust the file extension — the fast, normal path.
+    ByExtension,
+    /// Ignore the extension; read magic bytes to determine the format.
+    /// Used when the extension was found to be wrong.
+    ByContent,
+}
+
 /// Dispatch to the correct decoder based on `ext`.
-/// `guessed` should be true when called from the fallback path — it causes
-/// standard raster formats to use header-based detection instead of trusting
-/// the file extension, which may be wrong.
-/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to load_standard*.
-fn load_by_ext(ext: &str, path: &Path, guessed: bool) -> Result<DecodedImage, BoxError> {
+/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to `load_raster`.
+fn load_by_ext(
+    ext:      &str,
+    path:     &Path,
+    strategy: DecodeStrategy,
+) -> Result<DecodedImage, BoxError> {
     match ext {
         "svg" => load_svg(path),
         "jxl" => load_jxl(path),
         "gif" => load_gif(path),
-        _ if guessed => load_standard_guessed(path),
-        _            => load_standard(path),
+        _     => load_raster(path, strategy),
     }
 }
 
 /// Read the first 32 bytes of the file to identify its format.
 ///
 /// Returns a lowercase extension string, or `None` if unrecognised.
-/// Reading happens once and the bytes are passed to both the image-crate
+/// Reading happens once; the bytes are passed to both the image-crate
 /// guesser and the manual signature checks for JXL and SVG.
 fn sniff_format(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = [0u8; 32];
-    let n = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    let n   = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
     let buf = &buf[..n];
 
     // Use the image crate's format guesser for common raster formats.
@@ -163,8 +175,11 @@ fn sniff_format(path: &Path) -> Option<String> {
     }
 
     // SVG: XML begins with '<' (possibly after a UTF-8 BOM).
-    // We inspect up to 32 bytes which is sufficient for any practical SVG.
-    let text = std::str::from_utf8(buf).unwrap_or("").trim_start_matches('\u{FEFF}').trim_start();
+    // 32 bytes is sufficient for any practical SVG preamble.
+    let text = std::str::from_utf8(buf)
+        .unwrap_or("")
+        .trim_start_matches('\u{FEFF}')
+        .trim_start();
     if text.starts_with('<') {
         return Some("svg".to_owned());
     }
@@ -179,25 +194,21 @@ fn f32_to_u8(v: f32) -> u8 {
 
 // ── Decoders ──────────────────────────────────────────────────────────────────
 
-fn load_standard(path: &Path) -> Result<DecodedImage, BoxError> {
-    // Decode using the format implied by the file extension.
-    // This is the fast path — the extension is trusted on first attempt.
-    // If it fails, load_image() will sniff the header and call load_by_ext()
-    // with the correct extension, at which point load_standard_guessed() is
-    // used instead so the actual header drives the decoder.
-    let img   = image::open(path)?;
-    let rgba  = img.into_rgba8();
-    let (w, h) = rgba.dimensions();
-    Ok(DecodedImage::single(rgba.into_raw(), w, h))
-}
-
-/// Decode by reading the file header to determine the format, ignoring the
-/// extension entirely. Used by the wrong-extension fallback path.
-fn load_standard_guessed(path: &Path) -> Result<DecodedImage, BoxError> {
-    let file   = std::fs::File::open(path)?;
-    let reader = image::ImageReader::new(std::io::BufReader::new(file))
-        .with_guessed_format()?;
-    let img    = reader.decode()?;
+/// Decode a standard raster image (BMP, PNG, JPEG, WebP, TIFF, ICO).
+///
+/// `ByExtension` trusts the file extension — the fast, normal path.
+/// `ByContent` reads the file header to detect the format, ignoring the
+/// extension — used when the extension was found to be wrong.
+fn load_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
+    let img = match strategy {
+        DecodeStrategy::ByExtension => image::open(path)?,
+        DecodeStrategy::ByContent   => {
+            let file = std::fs::File::open(path)?;
+            image::ImageReader::new(std::io::BufReader::new(file))
+                .with_guessed_format()?
+                .decode()?
+        }
+    };
     let rgba   = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
@@ -245,8 +256,8 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     let mut samples = vec![0f32; pixel_count * channels];
     stream.write_to_buffer(&mut samples);
 
-    // Convert f32 samples to RGBA8. Pre-fill alpha to 255 so the opaque
-    // cases (1 or 3 channels) don't need to touch it.
+    // Convert f32 samples to RGBA8. Alpha is pre-filled to 255 (opaque) so the
+    // 1- and 3-channel cases only need to write RGB.
     let mut rgba = vec![255u8; pixel_count * 4];
     for i in 0..pixel_count {
         let s = i * channels;

@@ -395,8 +395,7 @@ impl App {
         path:   PathBuf,
         result: Result<(), String>,
         proxy:  &Proxy,
-        dr:     &mut DrainResult,
-    ) {
+    ) -> Option<String> {
         self.deleting = false;
         match result {
             Ok(()) => {
@@ -406,8 +405,9 @@ impl App {
                     Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
                     None       => self.clear_image(),
                 }
+                None
             }
-            Err(e) => dr.error_msg = Some(format!("Delete failed:\n{e}")),
+            Err(e) => Some(format!("Delete failed:\n{e}")),
         }
     }
 
@@ -443,7 +443,9 @@ impl App {
                     }
                 }
                 Msg::Deleted { path, result } => {
-                    self.on_deleted(path, result, proxy, &mut dr);
+                    if let Some(e) = self.on_deleted(path, result, proxy) {
+                        dr.error_msg = Some(e);
+                    }
                 }
             }
         }
@@ -579,6 +581,9 @@ fn show_error_dialog(msg: &str) {
 /// Offer to rename `path` to use `correct_ext`.
 ///
 /// Skips the prompt silently when the parent directory is confirmed read-only.
+/// When the target path already exists (e.g. renaming `5.png` → `5.jpg` but
+/// `5.jpg` already exists), a numbered suffix is appended: `5 (1).jpg`,
+/// `5 (2).jpg`, etc.
 /// Returns `Some(new_path)` when the rename succeeded, `None` otherwise.
 fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
     // Skip silently when the parent is read-only. If we cannot determine
@@ -590,7 +595,8 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
         .unwrap_or(false);
     if parent_readonly { return None; }
 
-    let new_path = path.with_extension(correct_ext);
+    // Resolve the target path, appending a counter if it already exists.
+    let new_path = unique_rename_target(path, correct_ext);
 
     #[cfg(windows)]
     {
@@ -623,6 +629,36 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
     { let _ = new_path; }
 
     None
+}
+
+/// Return a path that does not yet exist by appending ` (n)` before the
+/// extension when necessary.
+///
+/// Examples:
+/// - `5.png` + `"jpg"` → `5.jpg`          (if `5.jpg` does not exist)
+/// - `5.png` + `"jpg"` → `5 (1).jpg`      (if `5.jpg` already exists)
+/// - `5.png` + `"jpg"` → `5 (2).jpg`      (if `5.jpg` and `5 (1).jpg` exist)
+fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = path.parent().unwrap_or(Path::new(""));
+
+    let candidate = parent.join(format!("{stem}.{ext}"));
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    for n in 1u32.. {
+        let candidate = parent.join(format!("{stem} ({n}).{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    // Unreachable in practice — u32::MAX files cannot exist in one directory.
+    unreachable!("could not find a unique rename target")
 }
 
 // ── Window helpers ────────────────────────────────────────────────────────────
@@ -721,7 +757,10 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 /// Read only enough of the file to determine its pixel dimensions.
 /// For most formats this is just the header; SVG requires a full parse.
 fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
-    let ext = path.extension()?.to_ascii_lowercase();
+    let ext = path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)?;
+
     if ext == "svg" {
         let data = std::fs::read(path).ok()?;
         let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
