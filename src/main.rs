@@ -273,10 +273,7 @@ impl App {
             return;
         }
 
-        // Seed the navigator immediately so peek_next / peek_prev are accurate
-        // for preloading even before the decode thread finishes.
         self.loading_path = Some(path.clone());
-        self.navigator.set_current(path.clone());
 
         let tx    = self.msg_tx.clone();
         let proxy = proxy.clone();

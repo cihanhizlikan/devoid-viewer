@@ -12,6 +12,11 @@ pub struct DirNavigator {
     files: Vec<PathBuf>,
     /// Index of the currently displayed file.
     index: usize,
+    /// The directory that `files` was built from. Stored explicitly so that
+    /// the same-directory check in `set_current` does not have to infer it
+    /// from `files.first()`, which would give a wrong answer after the
+    /// single-entry fallback path resets the list.
+    current_dir: Option<PathBuf>,
 }
 
 impl DirNavigator {
@@ -20,16 +25,16 @@ impl DirNavigator {
     pub fn set_current(&mut self, path: PathBuf) {
         let new_dir = path.parent().map(Path::to_path_buf);
 
-        let same_dir = self.files.first()
-            .and_then(|p| p.parent())
-            .map(Path::to_path_buf)
-            .as_deref() == new_dir.as_deref();
-
-        if !same_dir {
-            self.rebuild(new_dir.as_deref());
+        if self.current_dir.as_deref() != new_dir.as_deref() {
+            self.current_dir = new_dir;
+            self.rebuild();
         }
 
-        // Locate `path` in the list, or fall back to a single-entry list
+        // Locate `path` in the sorted list. The fallback (replacing the list
+        // with a single entry) should not occur in normal use — it would only
+        // trigger if the file disappeared from the directory between the
+        // rebuild and this position scan. Navigation still works; the sibling
+        // list is restored the next time the directory changes.
         self.index = self.files.iter().position(|p| *p == path)
             .unwrap_or_else(|| {
                 self.files = vec![path];
@@ -91,9 +96,11 @@ impl DirNavigator {
 
     // ── Private ───────────────────────────────────────────────────────────────
 
-    fn rebuild(&mut self, dir: Option<&Path>) {
-        self.index = 0;
-        self.files = dir
+    /// Populate `files` from `current_dir`. Called only when the directory
+    /// changes. `self.index` is not touched here — `set_current` sets it
+    /// immediately after via `position()`.
+    fn rebuild(&mut self) {
+        self.files = self.current_dir.as_deref()
             .and_then(|d| std::fs::read_dir(d).ok())
             .map(|entries| {
                 let mut paths: Vec<PathBuf> = entries
