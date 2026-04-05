@@ -97,8 +97,19 @@ impl DirNavigator {
             .and_then(|d| std::fs::read_dir(d).ok())
             .map(|entries| {
                 let mut paths: Vec<PathBuf> = entries
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.is_file() && is_supported(p))
+                    .filter_map(|e| {
+                        let e = e.ok()?;
+                        // Use the DirEntry file type — already available from
+                        // the readdir() result on every major OS, no extra
+                        // stat() syscall needed. is_file() would cost one
+                        // syscall per file, i.e. 5000 disk hits on a cold
+                        // cache for a 5K-file folder.
+                        let ft = e.file_type().ok()?;
+                        if !ft.is_file() { return None; }
+                        let path = e.path();
+                        if !is_supported(&path) { return None; }
+                        Some(path)
+                    })
                     .collect();
                 paths.sort_by(|a, b| {
                     let a = a.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
