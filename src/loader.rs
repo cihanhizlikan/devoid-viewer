@@ -34,7 +34,14 @@ pub struct DecodedImage {
 
 impl DecodedImage {
     pub fn is_animated(&self) -> bool { self.frames.len() > 1 }
-    pub fn frame(&self, idx: usize) -> &Frame { &self.frames[idx] }
+
+    /// Return the frame at `idx`. Callers must ensure `idx < frames.len()`;
+    /// the index is always computed via modulo in the animation ticker so
+    /// this is guaranteed in practice.
+    pub fn frame(&self, idx: usize) -> &Frame {
+        debug_assert!(idx < self.frames.len(), "frame index {idx} out of range ({})", self.frames.len());
+        &self.frames[idx]
+    }
 
     fn single(pixels: Vec<u8>, width: u32, height: u32) -> Self {
         Self { frames: vec![Frame { pixels, delay_ms: 0 }], width, height }
@@ -174,8 +181,11 @@ fn sniff_format(path: &Path) -> Option<String> {
         return Some("jxl".to_owned());
     }
 
-    // SVG: XML begins with '<' (possibly after a UTF-8 BOM).
-    // 32 bytes is sufficient for any practical SVG preamble.
+    // SVG: look for XML's opening '<' after an optional UTF-8 BOM.
+    // This is intentionally broad — any XML-like file matches — but false
+    // positives are harmless: load_svg() will fail cleanly on non-SVG XML,
+    // and this path is only reached after the declared extension already
+    // failed to decode.
     let text = std::str::from_utf8(buf)
         .unwrap_or("")
         .trim_start_matches('\u{FEFF}')
@@ -187,7 +197,6 @@ fn sniff_format(path: &Path) -> Option<String> {
     None
 }
 
-#[inline]
 fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -222,12 +231,19 @@ fn load_gif(path: &Path) -> Result<DecodedImage, BoxError> {
     let decoder = GifDecoder::new(std::io::BufReader::new(file))?;
     let (width, height) = decoder.dimensions();
 
+    // Corrupt individual frames are skipped rather than aborting the
+    // whole decode — a partially broken GIF is more useful than nothing.
+    // The is_empty() guard below catches the case where all frames fail.
     let frames: Vec<Frame> = decoder
         .into_frames()
         .filter_map(|f| f.ok())
         .map(|f| {
             let (n, d) = f.delay().numer_denom_ms();
-            // Clamp to ≥ 20 ms to prevent zero-delay GIFs from locking the event loop.
+            // d==0 means a malformed delay ratio in the GIF stream;
+            // fall back to 100 ms (10 fps) rather than dividing by zero.
+            // Also clamp to ≥ 20 ms: some encoders emit 0-delay frames
+            // as a hack for "as fast as possible", which would busy-loop
+            // the event loop.
             let delay_ms = if d == 0 { 100 } else { (n / d).max(20) };
             Frame { pixels: f.into_buffer().into_raw(), delay_ms }
         })
@@ -246,12 +262,26 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
         jxl_oxide::RenderingIntent::Relative,
     ));
 
+    // Only frame 0 is rendered. Animated JXL is not yet supported;
+    // the file opens as a still image without error.
     let render      = image.render_frame(0)?;
     let mut stream  = render.stream();
     let width       = stream.width()    as usize;
     let height      = stream.height()   as usize;
     let channels    = stream.channels() as usize;
-    let pixel_count = width * height;
+
+    // Guard against absurdly large images before allocating potentially
+    // gigabytes of memory. 32 768 px per side is the cap used by most
+    // mainstream viewers and matches common GPU texture limits.
+    const MAX_DIM: usize = 32_768;
+    if width > MAX_DIM || height > MAX_DIM {
+        return Err(format!(
+            "JXL image too large ({width}×{height}); maximum dimension is {MAX_DIM}"
+        ).into());
+    }
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or("JXL image dimensions overflow")?;
 
     let mut samples = vec![0f32; pixel_count * channels];
     stream.write_to_buffer(&mut samples);
@@ -266,6 +296,8 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
             1 => { let v = samples[s]; (v, v, v, 1.0) }
             2 => { let v = samples[s]; (v, v, v, samples[s + 1]) }
             3 => (samples[s], samples[s+1], samples[s+2], 1.0),
+            // We requested sRGB output, so 4-channel RGBA is the only
+            // remaining valid case. 5+ channels cannot occur here.
             _ => (samples[s], samples[s+1], samples[s+2], samples[s+3]),
         };
         rgba[d]   = f32_to_u8(r);
@@ -289,7 +321,7 @@ fn load_svg(path: &Path) -> Result<DecodedImage, BoxError> {
     }
 
     let mut pixmap = tiny_skia::Pixmap::new(width, height)
-        .ok_or("failed to allocate SVG pixmap")?;
+        .ok_or_else(|| format!("failed to allocate SVG pixmap ({width}×{height})"))?;
     resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
 
     // tiny-skia produces premultiplied RGBA; convert to straight RGBA.

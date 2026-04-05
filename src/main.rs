@@ -229,6 +229,11 @@ impl App {
         if self.fullscreen { return; }
 
         if self.maximized {
+            // pre_maximize must always be Some when maximized is true.
+            // If it isn't, the state has drifted — the window will
+            // un-maximise but won't resize back, which is wrong.
+            debug_assert!(self.pre_maximize.is_some(),
+                "maximized=true but pre_maximize=None — state desync");
             window.set_maximized(false);
             if let Some(size) = self.pre_maximize.take() {
                 // request_inner_size is asynchronous — pending_center ensures
@@ -273,7 +278,10 @@ impl App {
             return;
         }
 
+        // Seed the navigator immediately so peek_next / peek_prev are accurate
+        // for preloading even before the decode thread finishes.
         self.loading_path = Some(path.clone());
+        self.navigator.set_current(path.clone());
 
         let tx    = self.msg_tx.clone();
         let proxy = proxy.clone();
@@ -286,6 +294,8 @@ impl App {
                 LoadOutcome::Unsupported(reason) =>
                     Msg::Unsupported { path, reason },
             };
+            // send() and send_event() only fail if the receiver is dropped,
+            // which means the UI thread has exited and the process is ending.
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
         });
@@ -330,6 +340,7 @@ impl App {
             let proxy = proxy.clone();
             std::thread::spawn(move || {
                 if let LoadOutcome::Ok(img) = load_image(&path) {
+                    // Failure means the UI thread has exited; ignore.
                     let _ = tx.send(Msg::Preloaded { path, image: img });
                     let _ = proxy.send_event(WakeUp);
                 }
@@ -382,6 +393,7 @@ impl App {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let result = std::fs::remove_file(&path).map_err(|e| e.to_string());
+            // Failure means the UI thread has exited; ignore.
             let _ = tx.send(Msg::Deleted { path, result });
             let _ = proxy.send_event(WakeUp);
         });
@@ -430,6 +442,10 @@ impl App {
                 Msg::WrongExtension { path, image, mode, correct_ext } => {
                     if self.is_active_load(&path) {
                         dr.resize_to = self.apply_image(path.clone(), image, mode, proxy);
+                        // Only one primary load is active at a time (loading_path
+                        // guard), so rename_offer should never already be set.
+                        debug_assert!(dr.rename_offer.is_none(),
+                            "two WrongExtension messages in one drain — second rename dropped");
                         dr.rename_offer = Some((path, correct_ext));
                     }
                 }
@@ -773,6 +789,10 @@ fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
 /// Fill the softbuffer surface with the background colour.
 /// Called once before the event loop to overwrite the DWM white fill that
 /// appears on every new Win32 window before the application first paints.
+///
+/// Errors are intentionally swallowed: this is a cosmetic pre-paint. If it
+/// fails the initial white flash persists briefly, but the event loop's
+/// first `RedrawRequested` will paint correctly regardless.
 fn paint_background(surface: &mut Surface<Arc<Window>, Arc<Window>>, window: &Window) {
     let size  = window.inner_size();
     let win_w = NonZeroU32::new(size.width.max(1)).unwrap();
@@ -1031,15 +1051,18 @@ fn main() {
                     let win_h = size.height;
                     if win_w == 0 || win_h == 0 { return; }
 
-                    surface
-                        .resize(
-                            NonZeroU32::new(win_w).unwrap(),
-                            NonZeroU32::new(win_h).unwrap(),
-                        )
-                        .expect("surface resize");
-                    let mut buf = surface.buffer_mut().expect("surface buffer");
+                    // Surface operations can transiently fail during rapid
+                    // resizes (e.g. the buffer is briefly in an inconsistent
+                    // state). Skipping the frame is safe — winit will issue
+                    // another RedrawRequested once the window settles.
+                    let (Some(nzw), Some(nzh)) = (
+                        NonZeroU32::new(win_w),
+                        NonZeroU32::new(win_h),
+                    ) else { return; };
+                    if surface.resize(nzw, nzh).is_err() { return; }
+                    let Ok(mut buf) = surface.buffer_mut() else { return; };
                     render(&mut buf, win_w, win_h, app.view());
-                    buf.present().expect("present");
+                    if buf.present().is_err() { return; }
                 }
 
                 _ => {}
