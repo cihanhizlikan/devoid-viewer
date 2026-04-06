@@ -1,12 +1,11 @@
 //! loader.rs — Image decoding for all supported formats.
 //!
-//! | Format          | Crate                           |
-//! |-----------------|---------------------------------|
-//! | BMP/PNG/JPEG/   |                                 |
-//! |   WebP/TIFF/ICO | `image`                         |
-//! | GIF (animated)  | `image::codecs::gif`            |
-//! | JPEG XL (.jxl)  | `jxl-oxide`                     |
-//! | SVG             | `resvg` + `usvg` + `tiny-skia`  |
+//! | Format          | Crate                |
+//! |-----------------|----------------------|
+//! | BMP/PNG/JPEG/   |                      |
+//! |   WebP/TIFF/ICO | `image`              |
+//! | GIF (animated)  | `image::codecs::gif` |
+//! | JPEG XL (.jxl)  | `jxl-oxide`          |
 
 use std::path::Path;
 
@@ -64,7 +63,7 @@ pub enum LoadOutcome {
 /// File extensions Devoid Viewer can open.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "bmp", "png", "jpg", "jpeg", "gif", "webp",
-    "tiff", "tif", "ico", "jxl", "svg",
+    "tiff", "tif", "ico", "jxl",
 ];
 
 /// Returns `true` when the path has a supported image extension.
@@ -135,7 +134,6 @@ fn load_by_ext(
     strategy: DecodeStrategy,
 ) -> Result<DecodedImage, BoxError> {
     match ext {
-        "svg" => load_svg(path),
         "jxl" => load_jxl(path),
         "gif" => load_gif(path),
         _     => load_raster(path, strategy),
@@ -146,7 +144,7 @@ fn load_by_ext(
 ///
 /// Returns a lowercase extension string, or `None` if unrecognised.
 /// Reading happens once; the bytes are passed to both the image-crate
-/// guesser and the manual signature checks for JXL and SVG.
+/// guesser and the manual magic-byte check for JXL.
 fn sniff_format(path: &Path) -> Option<String> {
     use std::io::Read;
     let mut buf = [0u8; 32];
@@ -179,19 +177,6 @@ fn sniff_format(path: &Path) -> Option<String> {
                               0x0D,0x0A,0x87,0x0A])
     {
         return Some("jxl".to_owned());
-    }
-
-    // SVG: look for XML's opening '<' after an optional UTF-8 BOM.
-    // This is intentionally broad — any XML-like file matches — but false
-    // positives are harmless: load_svg() will fail cleanly on non-SVG XML,
-    // and this path is only reached after the declared extension already
-    // failed to decode.
-    let text = std::str::from_utf8(buf)
-        .unwrap_or("")
-        .trim_start_matches('\u{FEFF}')
-        .trim_start();
-    if text.starts_with('<') {
-        return Some("svg".to_owned());
     }
 
     None
@@ -307,38 +292,4 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     }
 
     Ok(DecodedImage::single(rgba, width as u32, height as u32))
-}
-
-fn load_svg(path: &Path) -> Result<DecodedImage, BoxError> {
-    let data = std::fs::read(path)?;
-    let tree = usvg::Tree::from_data(&data, &usvg::Options::default())?;
-
-    let sz     = tree.size();
-    let width  = sz.width()  as u32;
-    let height = sz.height() as u32;
-    if width == 0 || height == 0 {
-        return Err("SVG has zero dimensions".into());
-    }
-
-    let mut pixmap = tiny_skia::Pixmap::new(width, height)
-        .ok_or_else(|| format!("failed to allocate SVG pixmap ({width}×{height})"))?;
-    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pixmap.as_mut());
-
-    // tiny-skia produces premultiplied RGBA; convert to straight RGBA.
-    let pixels: Vec<u8> = pixmap.pixels().iter().flat_map(|p| {
-        let a = p.alpha();
-        if a == 0 {
-            [0u8, 0, 0, 0]
-        } else {
-            let inv = 255.0 / a as f32;
-            [
-                (p.red()   as f32 * inv).round() as u8,
-                (p.green() as f32 * inv).round() as u8,
-                (p.blue()  as f32 * inv).round() as u8,
-                a,
-            ]
-        }
-    }).collect();
-
-    Ok(DecodedImage::single(pixels, width, height))
 }

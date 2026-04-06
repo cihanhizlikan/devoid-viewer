@@ -278,8 +278,9 @@ impl App {
             return;
         }
 
-        // Seed the navigator immediately so peek_next / peek_prev are accurate
-        // for preloading even before the decode thread finishes.
+        // Prime the navigator now so the directory listing is built before
+        // the decode finishes — it will be ready the moment apply_image()
+        // calls preload_adjacent().
         self.loading_path = Some(path.clone());
         self.navigator.set_current(path.clone());
 
@@ -768,18 +769,8 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 }
 
 /// Read only enough of the file to determine its pixel dimensions.
-/// For most formats this is just the header; SVG requires a full parse.
+/// For all supported formats this is just the header — no full decode needed.
 fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
-    let ext = path.extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)?;
-
-    if ext == "svg" {
-        let data = std::fs::read(path).ok()?;
-        let tree = usvg::Tree::from_data(&data, &usvg::Options::default()).ok()?;
-        let sz   = tree.size();
-        return Some((sz.width() as u32, sz.height() as u32));
-    }
     let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
     image::ImageReader::new(reader)
         .with_guessed_format().ok()?

@@ -20,11 +20,6 @@ image = { version = "0.25", default-features = false, features = [
 # JPEG XL
 jxl-oxide = { version = "0.10" }
 
-# SVG
-resvg     = "0.42"
-usvg      = "0.42"
-tiny-skia = "0.11"
-
 # ── Threading ─────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 
