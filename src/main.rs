@@ -278,9 +278,8 @@ impl App {
             return;
         }
 
-        // Prime the navigator now so the directory listing is built before
-        // the decode finishes — it will be ready the moment apply_image()
-        // calls preload_adjacent().
+        // Seed the navigator immediately so peek_next / peek_prev are accurate
+        // for preloading even before the decode thread finishes.
         self.loading_path = Some(path.clone());
         self.navigator.set_current(path.clone());
 
@@ -677,13 +676,33 @@ fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
 
 // ── Window helpers ────────────────────────────────────────────────────────────
 
+/// Work area rectangle in physical pixels: (left, top, right, bottom).
+///
+/// On Windows this is `SPI_GETWORKAREA` — the desktop area excluding the
+/// taskbar, regardless of which edge it is on.
+#[cfg(windows)]
+fn work_area_rect() -> Option<(i32, i32, i32, i32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut _ as *mut _, 0);
+    }
+    ((r.right - r.left) > 0 && (r.bottom - r.top) > 0)
+        .then_some((r.left, r.top, r.right, r.bottom))
+}
+
 /// Usable desktop dimensions in logical pixels.
 /// On Windows uses `SPI_GETWORKAREA` for exact taskbar exclusion.
 /// Elsewhere uses 90 % × 85 % of the monitor size as a conservative heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
     #[cfg(windows)]
-    if let Some(wa) = windows_work_area(window) {
-        return wa;
+    if let Some((l, t, r, b)) = work_area_rect() {
+        let sf = window.current_monitor()
+            .or_else(|| window.available_monitors().next())
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0);
+        return ((r - l) as f64 / sf, (b - t) as f64 / sf);
     }
 
     window.current_monitor()
@@ -696,42 +715,68 @@ fn work_area(window: &Window) -> (f64, f64) {
         .unwrap_or((1152.0, 648.0))
 }
 
-#[cfg(windows)]
-fn windows_work_area(window: &Window) -> Option<(f64, f64)> {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-    let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-    unsafe {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rect as *mut _ as *mut _, 0);
-    }
-    let sf = window.current_monitor()
-        .or_else(|| window.available_monitors().next())
-        .map(|m| m.scale_factor())
-        .unwrap_or(1.0);
-    let w = (rect.right  - rect.left) as f64 / sf;
-    let h = (rect.bottom - rect.top)  as f64 / sf;
-    (w > 0.0 && h > 0.0).then_some((w, h))
-}
-
-/// Scale `(w, h)` down to fit inside the work area; never scale up.
+/// Scale `(w, h)` down so the outer window fits inside the work area.
+///
+/// The title bar height is measured exactly from the live window frame
+/// (outer minus inner size) so no hardcoded pixel value is assumed.
 fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
     let (max_w, max_h) = work_area(window);
-    let scale = (max_w / w as f64).min(max_h / h as f64).min(1.0);
+    // Measure the exact title bar height from the window frame so we
+    // reserve the right amount regardless of DPI or Windows version.
+    let title_bar_h = window.outer_size().height
+        .saturating_sub(window.inner_size().height) as f64;
+    let available_h = (max_h - title_bar_h).max(1.0);
+    let scale = (max_w / w as f64).min(available_h / h as f64).min(1.0);
     ((w as f64 * scale) as u32, (h as f64 * scale) as u32)
 }
 
-/// Centre the window on its current monitor with a minimum top margin so the
-/// title bar always remains reachable.
+/// Centre the window within the usable work area.
+///
+/// On Windows the work area origin and bounds come from `SPI_GETWORKAREA`,
+/// so the window is always placed clear of the taskbar regardless of which
+/// edge it is on. The outer window top is pinned to the work area top and
+/// the outer bottom is clamped to the work area bottom.
 fn center_window(window: &Window) {
     let Some(mon) = window.current_monitor()
         .or_else(|| window.available_monitors().next()) else { return };
-    let mp = mon.position();
-    let ms = mon.size();
-    let ws = window.outer_size();
-    let sf = mon.scale_factor();
-    let x  = mp.x + (ms.width  as i32 - ws.width  as i32) / 2;
-    let y  = (mp.y + (ms.height as i32 - ws.height as i32) / 2)
-             .max(mp.y + (30.0 * sf) as i32);
+
+    let ws = window.outer_size();   // physical pixels, includes title bar
+
+    // On Windows use the exact work area rect (excludes taskbar on any edge).
+    // Elsewhere fall back to 90 % × 85 % of the monitor anchored at its origin.
+    #[cfg(windows)]
+    let (wa_left, wa_top, wa_right, wa_bottom) = {
+        let mp = mon.position();
+        work_area_rect().unwrap_or_else(|| {
+            let ms = mon.size();
+            let w  = (ms.width  as f64 * 0.90) as i32;
+            let h  = (ms.height as f64 * 0.85) as i32;
+            (mp.x, mp.y, mp.x + w, mp.y + h)
+        })
+    };
+    #[cfg(not(windows))]
+    let (wa_left, wa_top, wa_right, wa_bottom) = {
+        let mp = mon.position();
+        let ms = mon.size();
+        let w  = (ms.width  as f64 * 0.90) as i32;
+        let h  = (ms.height as f64 * 0.85) as i32;
+        (mp.x, mp.y, mp.x + w, mp.y + h)
+    };
+
+    let wa_w = wa_right  - wa_left;
+    let wa_h = wa_bottom - wa_top;
+
+    // Centre horizontally within the work area.
+    let x = wa_left + (wa_w - ws.width as i32) / 2;
+
+    // Centre vertically within the work area.
+    // If the window is taller than the work area, pin to the top so the
+    // title bar remains accessible; never let the bottom exceed wa_bottom.
+    let max_y = wa_bottom - ws.height as i32;
+    let y     = (wa_top + (wa_h - ws.height as i32) / 2)
+                    .max(wa_top)
+                    .min(max_y.max(wa_top));
+
     window.set_outer_position(PhysicalPosition::new(x, y));
 }
 
