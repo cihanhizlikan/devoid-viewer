@@ -214,8 +214,7 @@ impl App {
     fn register_click(&mut self) -> bool {
         let now       = Instant::now();
         let is_double = self.last_click
-            .map(|t| now.duration_since(t) <= DOUBLE_CLICK)
-            .unwrap_or(false);
+            .is_some_and(|t| now.duration_since(t) <= DOUBLE_CLICK);
         self.last_click = Some(now);
         is_double
     }
@@ -232,8 +231,10 @@ impl App {
             // pre_maximize must always be Some when maximized is true.
             // If it isn't, the state has drifted — the window will
             // un-maximise but won't resize back, which is wrong.
-            debug_assert!(self.pre_maximize.is_some(),
-                "maximized=true but pre_maximize=None — state desync");
+            debug_assert!(
+                self.pre_maximize.is_some(),
+                "maximized=true but pre_maximize=None — state desync"
+            );
             window.set_maximized(false);
             if let Some(size) = self.pre_maximize.take() {
                 // request_inner_size is asynchronous — pending_center ensures
@@ -260,13 +261,10 @@ impl App {
 
     /// Exit fullscreen if active. Returns `true` when a change was made.
     fn exit_fullscreen(&mut self, window: &Window) -> bool {
-        if self.fullscreen {
-            window.set_fullscreen(None);
-            self.fullscreen = false;
-            true
-        } else {
-            false
-        }
+        if !self.fullscreen { return false; }
+        window.set_fullscreen(None);
+        self.fullscreen = false;
+        true
     }
 
     // ── Image loading ─────────────────────────────────────────────────────────
@@ -305,9 +303,9 @@ impl App {
     /// and reset animation. Returns `Some((w, h))` when a resize is needed.
     fn apply_image(
         &mut self,
-        path: PathBuf,
-        img:  DecodedImage,
-        mode: OpenMode,
+        path:  PathBuf,
+        img:   DecodedImage,
+        mode:  OpenMode,
         proxy: &Proxy,
     ) -> Option<(u32, u32)> {
         let resize = (mode == OpenMode::FirstImage).then_some((img.width, img.height));
@@ -340,7 +338,6 @@ impl App {
             let proxy = proxy.clone();
             std::thread::spawn(move || {
                 if let LoadOutcome::Ok(img) = load_image(&path) {
-                    // Failure means the UI thread has exited; ignore.
                     let _ = tx.send(Msg::Preloaded { path, image: img });
                     let _ = proxy.send_event(WakeUp);
                 }
@@ -363,16 +360,15 @@ impl App {
         let Some(deadline) = self.next_frame_at else { return false; };
         if Instant::now() < deadline { return false; }
 
-        if let Some(img) = &self.current_image {
-            self.frame_index = (self.frame_index + 1) % img.frames.len();
-            let delay = img.frame(self.frame_index).delay_ms;
-            self.next_frame_at =
-                Some(Instant::now() + Duration::from_millis(delay as u64));
-            true
-        } else {
+        let Some(img) = &self.current_image else {
             self.next_frame_at = None;
-            false
-        }
+            return false;
+        };
+
+        self.frame_index = (self.frame_index + 1) % img.frames.len();
+        let delay = img.frame(self.frame_index).delay_ms;
+        self.next_frame_at = Some(Instant::now() + Duration::from_millis(delay as u64));
+        true
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────
@@ -393,7 +389,6 @@ impl App {
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let result = std::fs::remove_file(&path).map_err(|e| e.to_string());
-            // Failure means the UI thread has exited; ignore.
             let _ = tx.send(Msg::Deleted { path, result });
             let _ = proxy.send_event(WakeUp);
         });
@@ -444,8 +439,10 @@ impl App {
                         dr.resize_to = self.apply_image(path.clone(), image, mode, proxy);
                         // Only one primary load is active at a time (loading_path
                         // guard), so rename_offer should never already be set.
-                        debug_assert!(dr.rename_offer.is_none(),
-                            "two WrongExtension messages in one drain — second rename dropped");
+                        debug_assert!(
+                            dr.rename_offer.is_none(),
+                            "two WrongExtension messages in one drain — second rename dropped"
+                        );
                         dr.rename_offer = Some((path, correct_ext));
                     }
                 }
@@ -501,12 +498,17 @@ fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
 /// Alpha-composite a straight-RGBA pixel over the background colour.
 #[inline]
 fn composite(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    #[inline]
-    fn blend(src: u8, a: u32) -> u8 {
-        ((src as u32 * a + BG as u32 * (255 - a)) / 255) as u8
-    }
-    let a = a as u32;
-    pack_rgb(blend(r, a), blend(g, a), blend(b, a))
+    if a == 255 { return pack_rgb(r, g, b); }
+    if a == 0   { return pack_rgb(BG, BG, BG); }
+
+    let a32 = a as u32;
+    let inv = 255 - a32;
+    let bg  = BG as u32;
+    pack_rgb(
+        ((r as u32 * a32 + bg * inv) / 255) as u8,
+        ((g as u32 * a32 + bg * inv) / 255) as u8,
+        ((b as u32 * a32 + bg * inv) / 255) as u8,
+    )
 }
 
 /// Pack RGB bytes into softbuffer's `0x00RRGGBB` u32.
@@ -532,22 +534,37 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 
     let pixels   = v.image.frame(v.frame).pixels.as_slice();
     let (iw, ih) = (v.image.width, v.image.height);
+    let inv_scale = 1.0 / scale;
 
-    // dx/dy are plain loop counters — no per-pixel division or modulo.
     for dy in 0..win_h as i32 {
-        for dx in 0..win_w as i32 {
-            buf[dy as usize * win_w as usize + dx as usize] =
-                if dx >= off_x && dx < off_x + dst_w
-                && dy >= off_y && dy < off_y + dst_h
-                {
-                    let [r, g, b, a] = nearest(pixels, iw, ih,
-                        (dx - off_x) as f32 / scale,
-                        (dy - off_y) as f32 / scale);
-                    composite(r, g, b, a)
-                } else {
-                    bg
-                };
+        let row_start = dy as usize * win_w as usize;
+        let row = &mut buf[row_start..row_start + win_w as usize];
+
+        // Rows entirely above or below the image: fill with background.
+        if dy < off_y || dy >= off_y + dst_h {
+            row.fill(bg);
+            continue;
         }
+
+        let sy = (dy - off_y) as f32 * inv_scale;
+
+        // Left margin.
+        let img_x0 = off_x.max(0) as usize;
+        let img_x1 = (off_x + dst_w).min(win_w as i32) as usize;
+        row[..img_x0].fill(bg);
+
+        // Image region.
+        for dx in img_x0..img_x1 {
+            let [r, g, b, a] = nearest(
+                pixels, iw, ih,
+                (dx as i32 - off_x) as f32 * inv_scale,
+                sy,
+            );
+            row[dx] = composite(r, g, b, a);
+        }
+
+        // Right margin.
+        row[img_x1..].fill(bg);
     }
 }
 
@@ -604,8 +621,7 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
     // reject it and we show an error.
     let parent_readonly = path.parent()
         .and_then(|p| std::fs::metadata(p).ok())
-        .map(|m| m.permissions().readonly())
-        .unwrap_or(false);
+        .is_some_and(|m| m.permissions().readonly());
     if parent_readonly { return None; }
 
     // Resolve the target path, appending a counter if it already exists.
@@ -652,8 +668,7 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
 /// - `5.png` + `"jpg"` → `5 (1).jpg`      (if `5.jpg` already exists)
 /// - `5.png` + `"jpg"` → `5 (2).jpg`      (if `5.jpg` and `5 (1).jpg` exist)
 fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
-    let stem = path
-        .file_stem()
+    let stem   = path.file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let parent = path.parent().unwrap_or(Path::new(""));
@@ -692,21 +707,34 @@ fn work_area_rect() -> Option<(i32, i32, i32, i32)> {
         .then_some((r.left, r.top, r.right, r.bottom))
 }
 
+/// Return the best available monitor, preferring the one the window is on.
+fn current_or_any_monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
+    window.current_monitor().or_else(|| window.available_monitors().next())
+}
+
+/// Heuristic work area as a physical-pixel rect when no OS API is available.
+/// Uses 90% × 85% of the monitor size, anchored at the monitor origin.
+fn heuristic_work_area(monitor: &winit::monitor::MonitorHandle) -> (i32, i32, i32, i32) {
+    let pos  = monitor.position();
+    let size = monitor.size();
+    let w = (size.width  as f64 * 0.90) as i32;
+    let h = (size.height as f64 * 0.85) as i32;
+    (pos.x, pos.y, pos.x + w, pos.y + h)
+}
+
 /// Usable desktop dimensions in logical pixels.
 /// On Windows uses `SPI_GETWORKAREA` for exact taskbar exclusion.
-/// Elsewhere uses 90 % × 85 % of the monitor size as a conservative heuristic.
+/// Elsewhere uses 90% × 85% of the monitor size as a conservative heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
     #[cfg(windows)]
     if let Some((l, t, r, b)) = work_area_rect() {
-        let sf = window.current_monitor()
-            .or_else(|| window.available_monitors().next())
+        let sf = current_or_any_monitor(window)
             .map(|m| m.scale_factor())
             .unwrap_or(1.0);
         return ((r - l) as f64 / sf, (b - t) as f64 / sf);
     }
 
-    window.current_monitor()
-        .or_else(|| window.available_monitors().next())
+    current_or_any_monitor(window)
         .map(|m| {
             let sf = m.scale_factor();
             let s  = m.size();
@@ -737,31 +765,17 @@ fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
 /// edge it is on. The outer window top is pinned to the work area top and
 /// the outer bottom is clamped to the work area bottom.
 fn center_window(window: &Window) {
-    let Some(mon) = window.current_monitor()
-        .or_else(|| window.available_monitors().next()) else { return };
-
+    let Some(mon) = current_or_any_monitor(window) else { return };
     let ws = window.outer_size();   // physical pixels, includes title bar
 
     // On Windows use the exact work area rect (excludes taskbar on any edge).
-    // Elsewhere fall back to 90 % × 85 % of the monitor anchored at its origin.
+    // Elsewhere fall back to 90% × 85% of the monitor anchored at its origin.
     #[cfg(windows)]
-    let (wa_left, wa_top, wa_right, wa_bottom) = {
-        let mp = mon.position();
-        work_area_rect().unwrap_or_else(|| {
-            let ms = mon.size();
-            let w  = (ms.width  as f64 * 0.90) as i32;
-            let h  = (ms.height as f64 * 0.85) as i32;
-            (mp.x, mp.y, mp.x + w, mp.y + h)
-        })
-    };
+    let (wa_left, wa_top, wa_right, wa_bottom) =
+        work_area_rect().unwrap_or_else(|| heuristic_work_area(&mon));
+
     #[cfg(not(windows))]
-    let (wa_left, wa_top, wa_right, wa_bottom) = {
-        let mp = mon.position();
-        let ms = mon.size();
-        let w  = (ms.width  as f64 * 0.90) as i32;
-        let h  = (ms.height as f64 * 0.85) as i32;
-        (mp.x, mp.y, mp.x + w, mp.y + h)
-    };
+    let (wa_left, wa_top, wa_right, wa_bottom) = heuristic_work_area(&mon);
 
     let wa_w = wa_right  - wa_left;
     let wa_h = wa_bottom - wa_top;

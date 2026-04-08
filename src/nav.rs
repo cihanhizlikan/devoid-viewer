@@ -44,31 +44,22 @@ impl DirNavigator {
 
     /// Advance forward (wraps). Returns `None` if fewer than 2 images exist.
     pub fn next(&mut self) -> Option<PathBuf> {
-        if self.files.len() < 2 { return None; }
-        self.index = (self.index + 1) % self.files.len();
-        Some(self.files[self.index].clone())
+        self.step(Direction::Forward)
     }
 
     /// Go back (wraps). Returns `None` if fewer than 2 images exist.
     pub fn prev(&mut self) -> Option<PathBuf> {
-        if self.files.len() < 2 { return None; }
-        self.index = self.index.checked_sub(1).unwrap_or(self.files.len() - 1);
-        Some(self.files[self.index].clone())
+        self.step(Direction::Backward)
     }
 
     /// Peek at the next path without mutating state.
     pub fn peek_next(&self) -> Option<PathBuf> {
-        (self.files.len() > 1).then(|| {
-            self.files[(self.index + 1) % self.files.len()].clone()
-        })
+        self.peek(Direction::Forward)
     }
 
     /// Peek at the previous path without mutating state.
     pub fn peek_prev(&self) -> Option<PathBuf> {
-        (self.files.len() > 1).then(|| {
-            let idx = self.index.checked_sub(1).unwrap_or(self.files.len() - 1);
-            self.files[idx].clone()
-        })
+        self.peek(Direction::Backward)
     }
 
     /// Remove a path (e.g. after deletion) and adjust the index so the next
@@ -96,37 +87,72 @@ impl DirNavigator {
 
     // ── Private ───────────────────────────────────────────────────────────────
 
+    /// Advance the index in `direction` and return the new current path.
+    /// Returns `None` if fewer than 2 images exist (nothing to navigate to).
+    fn step(&mut self, direction: Direction) -> Option<PathBuf> {
+        if self.files.len() < 2 { return None; }
+        self.index = self.wrapped_index(direction);
+        Some(self.files[self.index].clone())
+    }
+
+    /// Peek at the neighbour in `direction` without mutating state.
+    fn peek(&self, direction: Direction) -> Option<PathBuf> {
+        (self.files.len() > 1).then(|| {
+            self.files[self.wrapped_index(direction)].clone()
+        })
+    }
+
+    /// Compute the neighbour index with wraparound.
+    fn wrapped_index(&self, direction: Direction) -> usize {
+        match direction {
+            Direction::Forward  => (self.index + 1) % self.files.len(),
+            Direction::Backward => self.index
+                .checked_sub(1)
+                .unwrap_or(self.files.len() - 1),
+        }
+    }
+
     /// Populate `files` from `current_dir`. Called only when the directory
     /// changes. `self.index` is not touched here — `set_current` sets it
     /// immediately after via `position()`.
     fn rebuild(&mut self) {
-        self.files = self.current_dir.as_deref()
-            .and_then(|d| std::fs::read_dir(d).ok())
-            .map(|entries| {
-                let mut paths: Vec<PathBuf> = entries
-                    .filter_map(|e| {
-                        let e = e.ok()?;
-                        // Use the DirEntry file type — already available from
-                        // the readdir() result on every major OS, no extra
-                        // stat() syscall needed. is_file() would cost one
-                        // syscall per file, i.e. 5000 disk hits on a cold
-                        // cache for a 5K-file folder.
-                        let ft = e.file_type().ok()?;
-                        if !ft.is_file() { return None; }
-                        let path = e.path();
-                        if !is_supported(&path) { return None; }
-                        Some(path)
-                    })
-                    .collect();
-                paths.sort_by(|a, b| {
-                    let a = a.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                    let b = b.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-                    human_sort(&a, &b)
-                });
-                paths
+        let Some(dir) = self.current_dir.as_deref() else {
+            self.files = Vec::new();
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            self.files = Vec::new();
+            return;
+        };
+
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|e| {
+                let e = e.ok()?;
+                // Use the DirEntry file type — already available from
+                // the readdir() result on every major OS, no extra
+                // stat() syscall needed. is_file() would cost one
+                // syscall per file, i.e. 5000 disk hits on a cold
+                // cache for a 5K-file folder.
+                if !e.file_type().ok()?.is_file() { return None; }
+                let path = e.path();
+                is_supported(&path).then_some(path)
             })
-            .unwrap_or_default();
+            .collect();
+
+        paths.sort_by(|a, b| {
+            let a = a.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let b = b.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            human_sort(&a, &b)
+        });
+        self.files = paths;
     }
+}
+
+/// Direction for single-step navigation.
+#[derive(Clone, Copy)]
+enum Direction {
+    Forward,
+    Backward,
 }
 
 // ── Human / natural sort ──────────────────────────────────────────────────────
@@ -156,15 +182,13 @@ fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
+/// Consume and return a run of ASCII digits as a `u64`, saturating on overflow.
 fn consume_number(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
     let mut n = 0u64;
     while let Some(&c) = iter.peek() {
-        if c.is_ascii_digit() {
-            n = n.saturating_mul(10).saturating_add(c as u64 - b'0' as u64);
-            iter.next();
-        } else {
-            break;
-        }
+        let Some(digit) = c.to_digit(10) else { break };
+        n = n.saturating_mul(10).saturating_add(digit as u64);
+        iter.next();
     }
     n
 }

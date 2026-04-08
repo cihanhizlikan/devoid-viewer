@@ -38,12 +38,19 @@ impl DecodedImage {
     /// the index is always computed via modulo in the animation ticker so
     /// this is guaranteed in practice.
     pub fn frame(&self, idx: usize) -> &Frame {
-        debug_assert!(idx < self.frames.len(), "frame index {idx} out of range ({})", self.frames.len());
+        debug_assert!(
+            idx < self.frames.len(),
+            "frame index {idx} out of range ({})", self.frames.len()
+        );
         &self.frames[idx]
     }
 
     fn single(pixels: Vec<u8>, width: u32, height: u32) -> Self {
-        Self { frames: vec![Frame { pixels, delay_ms: 0 }], width, height }
+        Self {
+            frames: vec![Frame { pixels, delay_ms: 0 }],
+            width,
+            height,
+        }
     }
 }
 
@@ -84,13 +91,13 @@ pub fn is_supported(path: &Path) -> bool {
 pub fn load_image(path: &Path) -> LoadOutcome {
     let ext = file_ext(path);
 
-    if let Ok(img) = load_by_ext(&ext, path, DecodeStrategy::ByExtension) {
+    if let Ok(img) = decode_by_ext(&ext, path, DecodeStrategy::ByExtension) {
         return LoadOutcome::Ok(img);
     }
 
     match sniff_format(path) {
         Some(actual) if actual != ext => {
-            match load_by_ext(&actual, path, DecodeStrategy::ByContent) {
+            match decode_by_ext(&actual, path, DecodeStrategy::ByContent) {
                 Ok(img) => LoadOutcome::WrongExtension(img, actual),
                 Err(e)  => LoadOutcome::Unsupported(e.to_string()),
             }
@@ -127,18 +134,27 @@ enum DecodeStrategy {
 }
 
 /// Dispatch to the correct decoder based on `ext`.
-/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to `load_raster`.
-fn load_by_ext(
+/// BMP / PNG / JPEG / WebP / TIFF / ICO all fall through to `decode_raster`.
+fn decode_by_ext(
     ext:      &str,
     path:     &Path,
     strategy: DecodeStrategy,
 ) -> Result<DecodedImage, BoxError> {
     match ext {
-        "jxl" => load_jxl(path),
-        "gif" => load_gif(path),
-        _     => load_raster(path, strategy),
+        "jxl" => decode_jxl(path),
+        "gif" => decode_gif(path),
+        _     => decode_raster(path, strategy),
     }
 }
+
+/// JXL codestream signature: `FF 0A`.
+const JXL_CODESTREAM_MAGIC: [u8; 2] = [0xFF, 0x0A];
+
+/// JXL ISO BMFF container signature.
+const JXL_CONTAINER_MAGIC: [u8; 12] = [
+    0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20,
+    0x0D, 0x0A, 0x87, 0x0A,
+];
 
 /// Read the first 32 bytes of the file to identify its format.
 ///
@@ -147,41 +163,44 @@ fn load_by_ext(
 /// guesser and the manual magic-byte check for JXL.
 fn sniff_format(path: &Path) -> Option<String> {
     use std::io::Read;
+
     let mut buf = [0u8; 32];
     let n   = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
     let buf = &buf[..n];
 
     // Use the image crate's format guesser for common raster formats.
-    if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(buf))
-        .with_guessed_format()
-    {
-        let ext = match reader.format() {
-            Some(image::ImageFormat::Png)  => Some("png"),
-            Some(image::ImageFormat::Jpeg) => Some("jpg"),
-            Some(image::ImageFormat::Bmp)  => Some("bmp"),
-            Some(image::ImageFormat::Gif)  => Some("gif"),
-            Some(image::ImageFormat::WebP) => Some("webp"),
-            Some(image::ImageFormat::Tiff) => Some("tiff"),
-            Some(image::ImageFormat::Ico)  => Some("ico"),
-            _                              => None,
-        };
-        if let Some(ext) = ext {
-            return Some(ext.to_owned());
-        }
+    if let Some(ext) = sniff_raster_format(buf) {
+        return Some(ext.to_owned());
     }
 
-    // JXL codestream signature: FF 0A
-    // JXL ISO BMFF container:   00 00 00 0C 4A 58 4C 20 0D 0A 87 0A
-    if buf.starts_with(&[0xFF, 0x0A])
-        || buf.starts_with(&[0x00,0x00,0x00,0x0C,0x4A,0x58,0x4C,0x20,
-                              0x0D,0x0A,0x87,0x0A])
-    {
+    if buf.starts_with(&JXL_CODESTREAM_MAGIC) || buf.starts_with(&JXL_CONTAINER_MAGIC) {
         return Some("jxl".to_owned());
     }
 
     None
 }
 
+/// Map image-crate format detection to a canonical extension string.
+fn sniff_raster_format(header: &[u8]) -> Option<&'static str> {
+    use image::ImageFormat;
+
+    let reader = image::ImageReader::new(std::io::Cursor::new(header))
+        .with_guessed_format()
+        .ok()?;
+
+    match reader.format()? {
+        ImageFormat::Png  => Some("png"),
+        ImageFormat::Jpeg => Some("jpg"),
+        ImageFormat::Bmp  => Some("bmp"),
+        ImageFormat::Gif  => Some("gif"),
+        ImageFormat::WebP => Some("webp"),
+        ImageFormat::Tiff => Some("tiff"),
+        ImageFormat::Ico  => Some("ico"),
+        _                 => None,
+    }
+}
+
+/// Clamp a float sample to [0, 1] and scale to a `u8`.
 fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -193,7 +212,7 @@ fn f32_to_u8(v: f32) -> u8 {
 /// `ByExtension` trusts the file extension — the fast, normal path.
 /// `ByContent` reads the file header to detect the format, ignoring the
 /// extension — used when the extension was found to be wrong.
-fn load_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
+fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
     let img = match strategy {
         DecodeStrategy::ByExtension => image::open(path)?,
         DecodeStrategy::ByContent   => {
@@ -208,7 +227,7 @@ fn load_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, Bo
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
 }
 
-fn load_gif(path: &Path) -> Result<DecodedImage, BoxError> {
+fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
     use image::{AnimationDecoder, ImageDecoder};
     use image::codecs::gif::GifDecoder;
 
@@ -234,11 +253,13 @@ fn load_gif(path: &Path) -> Result<DecodedImage, BoxError> {
         })
         .collect();
 
-    if frames.is_empty() { return Err("GIF has no frames".into()); }
+    if frames.is_empty() {
+        return Err("GIF has no decodable frames".into());
+    }
     Ok(DecodedImage { frames, width, height })
 }
 
-fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
+fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     use jxl_oxide::JxlImage;
 
     let file      = std::fs::File::open(path)?;
@@ -249,11 +270,11 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
 
     // Only frame 0 is rendered. Animated JXL is not yet supported;
     // the file opens as a still image without error.
-    let render      = image.render_frame(0)?;
-    let mut stream  = render.stream();
-    let width       = stream.width()    as usize;
-    let height      = stream.height()   as usize;
-    let channels    = stream.channels() as usize;
+    let render     = image.render_frame(0)?;
+    let mut stream = render.stream();
+    let width      = stream.width()    as usize;
+    let height     = stream.height()   as usize;
+    let channels   = stream.channels() as usize;
 
     // Guard against absurdly large images before allocating potentially
     // gigabytes of memory. 32 768 px per side is the cap used by most
@@ -271,25 +292,29 @@ fn load_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     let mut samples = vec![0f32; pixel_count * channels];
     stream.write_to_buffer(&mut samples);
 
-    // Convert f32 samples to RGBA8. Alpha is pre-filled to 255 (opaque) so the
-    // 1- and 3-channel cases only need to write RGB.
-    let mut rgba = vec![255u8; pixel_count * 4];
-    for i in 0..pixel_count {
-        let s = i * channels;
-        let d = i * 4;
-        let (r, g, b, a) = match channels {
-            1 => { let v = samples[s]; (v, v, v, 1.0) }
-            2 => { let v = samples[s]; (v, v, v, samples[s + 1]) }
-            3 => (samples[s], samples[s+1], samples[s+2], 1.0),
-            // We requested sRGB output, so 4-channel RGBA is the only
-            // remaining valid case. 5+ channels cannot occur here.
-            _ => (samples[s], samples[s+1], samples[s+2], samples[s+3]),
-        };
-        rgba[d]   = f32_to_u8(r);
-        rgba[d+1] = f32_to_u8(g);
-        rgba[d+2] = f32_to_u8(b);
-        rgba[d+3] = f32_to_u8(a);
-    }
-
+    let rgba = jxl_samples_to_rgba8(&samples, pixel_count, channels);
     Ok(DecodedImage::single(rgba, width as u32, height as u32))
+}
+
+/// Convert interleaved float samples (1–4 channels) to RGBA8.
+///
+/// Missing channels are synthesised: greyscale is broadcast to RGB,
+/// and missing alpha defaults to fully opaque.
+fn jxl_samples_to_rgba8(samples: &[f32], pixel_count: usize, channels: usize) -> Vec<u8> {
+    let mut rgba = vec![0u8; pixel_count * 4];
+    for i in 0..pixel_count {
+        let s = &samples[i * channels..][..channels];
+        let d = &mut rgba[i * 4..][..4];
+        let (r, g, b, a) = match channels {
+            1 => (s[0], s[0], s[0], 1.0),
+            2 => (s[0], s[0], s[0], s[1]),
+            3 => (s[0], s[1], s[2], 1.0),
+            _ => (s[0], s[1], s[2], s[3]),
+        };
+        d[0] = f32_to_u8(r);
+        d[1] = f32_to_u8(g);
+        d[2] = f32_to_u8(b);
+        d[3] = f32_to_u8(a);
+    }
+    rgba
 }

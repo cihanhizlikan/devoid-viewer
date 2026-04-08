@@ -96,7 +96,6 @@ Root: HKA; Subkey: "Software\Classes\.tiff\OpenWithProgIds"; ValueType: string; 
 Root: HKA; Subkey: "Software\Classes\.tif\OpenWithProgIds";  ValueType: string; ValueName: "DevoidViewer.ImageFile"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 Root: HKA; Subkey: "Software\Classes\.ico\OpenWithProgIds";  ValueType: string; ValueName: "DevoidViewer.ImageFile"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 Root: HKA; Subkey: "Software\Classes\.jxl\OpenWithProgIds";  ValueType: string; ValueName: "DevoidViewer.ImageFile"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
-Root: HKA; Subkey: "Software\Classes\.svg\OpenWithProgIds";  ValueType: string; ValueName: "DevoidViewer.ImageFile"; ValueData: ""; Flags: uninsdeletevalue; Tasks: openwith
 
 ; ── Set as Default ───────────────────────────────────────────────────────────
 ; Only writes to HKLM (requires per-machine install / admin).
@@ -113,7 +112,6 @@ Root: HKLM; Subkey: "Software\Classes\.tiff"; ValueType: string; ValueName: ""; 
 Root: HKLM; Subkey: "Software\Classes\.tif";  ValueType: string; ValueName: ""; ValueData: "DevoidViewer.ImageFile"; Flags: uninsdeletevalue; Tasks: setdefault; Check: IsAdminInstallMode
 Root: HKLM; Subkey: "Software\Classes\.ico";  ValueType: string; ValueName: ""; ValueData: "DevoidViewer.ImageFile"; Flags: uninsdeletevalue; Tasks: setdefault; Check: IsAdminInstallMode
 Root: HKLM; Subkey: "Software\Classes\.jxl";  ValueType: string; ValueName: ""; ValueData: "DevoidViewer.ImageFile"; Flags: uninsdeletevalue; Tasks: setdefault; Check: IsAdminInstallMode
-Root: HKLM; Subkey: "Software\Classes\.svg";  ValueType: string; ValueName: ""; ValueData: "DevoidViewer.ImageFile"; Flags: uninsdeletevalue; Tasks: setdefault; Check: IsAdminInstallMode
 
 ; ── UserChoice cleanup on uninstall ─────────────────────────────────────────
 ; Windows writes UserChoice entries when HKCU\Software\Classes\.ext is set.
@@ -129,7 +127,6 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.tif\UserChoice";  Flags: deletekey uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.ico\UserChoice";  Flags: deletekey uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.jxl\UserChoice";  Flags: deletekey uninsdeletekey
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.svg\UserChoice";  Flags: deletekey uninsdeletekey
 
 [Run]
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-ClearIconCache"; \
