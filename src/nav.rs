@@ -117,11 +117,11 @@ impl DirNavigator {
     /// immediately after via `position()`.
     fn rebuild(&mut self) {
         let Some(dir) = self.current_dir.as_deref() else {
-            self.files = Vec::new();
+            self.files.clear();
             return;
         };
         let Ok(entries) = std::fs::read_dir(dir) else {
-            self.files = Vec::new();
+            self.files.clear();
             return;
         };
 
@@ -139,6 +139,9 @@ impl DirNavigator {
             })
             .collect();
 
+        // The sort allocates two Strings per comparison via to_string_lossy().
+        // This is acceptable: rebuild() runs only on directory change, not
+        // per-navigation, and avoids caching complexity.
         paths.sort_by(|a, b| {
             let a = a.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
             let b = b.file_name().unwrap_or_default().to_string_lossy().to_lowercase();

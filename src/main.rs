@@ -228,9 +228,6 @@ impl App {
         if self.fullscreen { return; }
 
         if self.maximized {
-            // pre_maximize must always be Some when maximized is true.
-            // If it isn't, the state has drifted — the window will
-            // un-maximise but won't resize back, which is wrong.
             debug_assert!(
                 self.pre_maximize.is_some(),
                 "maximized=true but pre_maximize=None — state desync"
@@ -437,8 +434,6 @@ impl App {
                 Msg::WrongExtension { path, image, mode, correct_ext } => {
                     if self.is_active_load(&path) {
                         dr.resize_to = self.apply_image(path.clone(), image, mode, proxy);
-                        // Only one primary load is active at a time (loading_path
-                        // guard), so rename_offer should never already be set.
                         debug_assert!(
                             dr.rename_offer.is_none(),
                             "two WrongExtension messages in one drain — second rename dropped"
@@ -488,11 +483,19 @@ fn fit_scale(img_w: u32, img_h: u32, win_w: u32, win_h: u32) -> f32 {
 
 /// Point-sample an RGBA8 buffer at float source coordinates.
 #[inline]
-fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
+fn nearest(pixels: &[u8], w: u32, sx: f32, sy: f32) -> [u8; 4] {
     let x = (sx as u32).min(w - 1);
-    let y = (sy as u32).min(h - 1);
-    let i = (y * w + x) as usize * 4;
-    [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    let y = (sy as u32).min(u32::MAX); // clamped by caller via off_y bounds
+    let i = (y as usize * w as usize + x as usize) * 4;
+    // SAFETY: callers guarantee sy is within [0, height); the slice is
+    // exactly width*height*4 bytes. Using try_into for a bounds-checked copy.
+    pixels[i..i + 4].try_into().unwrap()
+}
+
+/// Alpha-blend a single channel: `(src * alpha + bg * (255 - alpha)) / 255`.
+#[inline]
+fn blend_channel(src: u8, alpha: u32) -> u8 {
+    ((src as u32 * alpha + BG as u32 * (255 - alpha)) / 255) as u8
 }
 
 /// Alpha-composite a straight-RGBA pixel over the background colour.
@@ -500,15 +503,8 @@ fn nearest(pixels: &[u8], w: u32, h: u32, sx: f32, sy: f32) -> [u8; 4] {
 fn composite(r: u8, g: u8, b: u8, a: u8) -> u32 {
     if a == 255 { return pack_rgb(r, g, b); }
     if a == 0   { return pack_rgb(BG, BG, BG); }
-
     let a32 = a as u32;
-    let inv = 255 - a32;
-    let bg  = BG as u32;
-    pack_rgb(
-        ((r as u32 * a32 + bg * inv) / 255) as u8,
-        ((g as u32 * a32 + bg * inv) / 255) as u8,
-        ((b as u32 * a32 + bg * inv) / 255) as u8,
-    )
+    pack_rgb(blend_channel(r, a32), blend_channel(g, a32), blend_channel(b, a32))
 }
 
 /// Pack RGB bytes into softbuffer's `0x00RRGGBB` u32.
@@ -532,8 +528,8 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
     let off_x = ((win_w as f32 - dst_w as f32) / 2.0) as i32;
     let off_y = ((win_h as f32 - dst_h as f32) / 2.0) as i32;
 
-    let pixels   = v.image.frame(v.frame).pixels.as_slice();
-    let (iw, ih) = (v.image.width, v.image.height);
+    let pixels    = v.image.frame(v.frame).pixels.as_slice();
+    let iw        = v.image.width;
     let inv_scale = 1.0 / scale;
 
     for dy in 0..win_h as i32 {
@@ -556,7 +552,7 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
         // Image region.
         for dx in img_x0..img_x1 {
             let [r, g, b, a] = nearest(
-                pixels, iw, ih,
+                pixels, iw,
                 (dx as i32 - off_x) as f32 * inv_scale,
                 sy,
             );
@@ -610,26 +606,24 @@ fn show_error_dialog(msg: &str) {
 
 /// Offer to rename `path` to use `correct_ext`.
 ///
-/// Skips the prompt silently when the parent directory is confirmed read-only.
+/// Skips the prompt silently when the file is not writable (e.g. on a
+/// read-only volume or a CD-ROM). We probe by opening the file with write
+/// access rather than checking the parent directory's read-only attribute,
+/// because on Windows all shell folders (Desktop, Downloads, Pictures,
+/// etc.) have that attribute set by convention for Explorer's custom-view
+/// mechanism, even though they are fully writable.
+///
 /// When the target path already exists (e.g. renaming `5.png` → `5.jpg` but
 /// `5.jpg` already exists), a numbered suffix is appended: `5 (1).jpg`,
 /// `5 (2).jpg`, etc.
 /// Returns `Some(new_path)` when the rename succeeded, `None` otherwise.
 fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
-    // Check whether the file is actually writable before showing the dialog.
-    // We probe by opening the file with write access — this is the only
-    // reliable cross-platform test. Checking the parent directory's
-    // read-only attribute is NOT used because on Windows all shell folders
-    // (Desktop, Downloads, Pictures, etc.) have that attribute set by
-    // convention for Explorer's custom-view mechanism, even though they are
-    // fully writable. Checking the file itself avoids that false positive.
     let writable = std::fs::OpenOptions::new()
         .write(true)
         .open(path)
         .is_ok();
     if !writable { return None; }
 
-    // Resolve the target path, appending a counter if it already exists.
     let new_path = unique_rename_target(path, correct_ext);
 
     #[cfg(windows)]
@@ -754,8 +748,6 @@ fn work_area(window: &Window) -> (f64, f64) {
 /// (outer minus inner size) so no hardcoded pixel value is assumed.
 fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
     let (max_w, max_h) = work_area(window);
-    // Measure the exact title bar height from the window frame so we
-    // reserve the right amount regardless of DPI or Windows version.
     let title_bar_h = window.outer_size().height
         .saturating_sub(window.inner_size().height) as f64;
     let available_h = (max_h - title_bar_h).max(1.0);
@@ -785,10 +777,8 @@ fn center_window(window: &Window) {
     let wa_w = wa_right  - wa_left;
     let wa_h = wa_bottom - wa_top;
 
-    // Centre horizontally within the work area.
     let x = wa_left + (wa_w - ws.width as i32) / 2;
 
-    // Centre vertically within the work area.
     // If the window is taller than the work area, pin to the top so the
     // title bar remains accessible; never let the bottom exceed wa_bottom.
     let max_y = wa_bottom - ws.height as i32;
@@ -972,9 +962,6 @@ fn main() {
                 let dr = app.drain_messages(&proxy);
 
                 if let Some((iw, ih)) = dr.resize_to {
-                    // Issue the resize, then send a self-WakeUp. The window
-                    // size change is asynchronous; `pending_center` ensures we
-                    // wait for it to land before centering and revealing.
                     let (cw, ch) = clamp_to_work_area(iw, ih, &window);
                     let _ = window.request_inner_size(LogicalSize::new(cw, ch));
                     app.pending_center = true;
@@ -985,18 +972,13 @@ fn main() {
                     shown = ensure_visible(&window, shown);
                 }
 
-                // Update the title bar whenever the displayed image may have changed.
                 update_title(&window, app.current_filename().as_deref());
 
-                // Reveal before showing a blocking error dialog so we never
-                // leave an invisible process alive in the background.
                 if let Some(msg) = dr.error_msg {
                     shown = ensure_visible(&window, shown);
                     show_error_dialog(&msg);
                 }
 
-                // Rename offer shown after the drain so the dialog is never
-                // blocking inside the tight drain loop.
                 if let Some((old_path, correct_ext)) = dr.rename_offer {
                     if let Some(new_path) = offer_rename(&old_path, &correct_ext) {
                         app.apply_rename(&old_path, new_path);
@@ -1019,8 +1001,6 @@ fn main() {
                 WindowEvent::CloseRequested => quit(),
 
                 WindowEvent::Resized(_) => {
-                    // Sync our flag when the OS maximises the window externally
-                    // (Win+Up, or the maximise button while we suppressed SC_MAXIMIZE).
                     if window.is_maximized() && !app.maximized {
                         app.maximized = true;
                     }
@@ -1033,8 +1013,6 @@ fn main() {
                 } => {
                     if app.register_click() {
                         app.toggle_maximize(&window);
-                        // If toggle_maximize requested a resize (restore path),
-                        // send a self-WakeUp so centering fires after it lands.
                         if app.pending_center {
                             let _ = proxy.send_event(WakeUp);
                         }
@@ -1042,11 +1020,6 @@ fn main() {
                     }
                 }
 
-                // Scroll wheel / trackpad: down or right → next, up or left → previous.
-                // LineDelta (physical wheels) and PixelDelta (trackpads) are both handled.
-                // TouchPhase::Cancelled is ignored; momentum/inertia phases are not filtered
-                // because winit reports standard mouse-wheel events as TouchPhase::Moved
-                // regardless of device type.
                 WindowEvent::MouseWheel { delta, phase, .. }
                     if phase != TouchPhase::Cancelled =>
                 {
@@ -1067,7 +1040,6 @@ fn main() {
                         state: ElementState::Pressed, ..
                     }, ..
                 } => match code {
-                    // Navigation
                     KeyCode::ArrowRight | KeyCode::ArrowDown  | KeyCode::PageDown => {
                         app.navigate(true, &proxy);
                         window.request_redraw();
@@ -1076,7 +1048,6 @@ fn main() {
                         app.navigate(false, &proxy);
                         window.request_redraw();
                     }
-                    // Deletion
                     KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
                         if let Some(fname) = app.current_filename() {
                             if confirm_delete_dialog(&fname) {
@@ -1084,18 +1055,15 @@ fn main() {
                             }
                         }
                     }
-                    // Fullscreen
                     KeyCode::KeyF | KeyCode::F11 => {
                         app.toggle_fullscreen(&window);
                         window.request_redraw();
                     }
-                    // Exit fullscreen; no-op if not fullscreen
                     KeyCode::Escape => {
                         if app.exit_fullscreen(&window) {
                             window.request_redraw();
                         }
                     }
-                    // Quit
                     KeyCode::KeyQ => quit(),
                     _ => {}
                 },
@@ -1106,10 +1074,6 @@ fn main() {
                     let win_h = size.height;
                     if win_w == 0 || win_h == 0 { return; }
 
-                    // Surface operations can transiently fail during rapid
-                    // resizes (e.g. the buffer is briefly in an inconsistent
-                    // state). Skipping the frame is safe — winit will issue
-                    // another RedrawRequested once the window settles.
                     let (Some(nzw), Some(nzh)) = (
                         NonZeroU32::new(win_w),
                         NonZeroU32::new(win_h),

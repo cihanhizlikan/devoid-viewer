@@ -146,6 +146,8 @@ fn decode_by_ext(
     }
 }
 
+// ── Format detection ──────────────────────────────────────────────────────────
+
 /// JXL codestream signature: `FF 0A`.
 const JXL_CODESTREAM_MAGIC: [u8; 2] = [0xFF, 0x0A];
 
@@ -155,39 +157,33 @@ const JXL_CONTAINER_MAGIC: [u8; 12] = [
     0x0D, 0x0A, 0x87, 0x0A,
 ];
 
-/// Read the first 32 bytes of the file to identify its format.
+/// Identify a raster image format from its first few bytes.
 ///
-/// Returns a lowercase extension string, or `None` if unrecognised.
-/// Reading happens once; the bytes are passed to both the image-crate
-/// guesser and the manual magic-byte check for JXL.
-fn sniff_format(path: &Path) -> Option<String> {
-    use std::io::Read;
+/// This is the single source of truth for magic-byte detection of all formats
+/// the `image` crate handles. Both `sniff_format` (header sniffing for
+/// wrong-extension recovery) and `decode_raster` (extension-trust validation)
+/// delegate here.
+fn magic_to_format(buf: &[u8]) -> Option<image::ImageFormat> {
+    use image::ImageFormat;
 
-    let mut buf = [0u8; 32];
-    let n   = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
-    let buf = &buf[..n];
-
-    // Use the image crate's format guesser for common raster formats.
-    if let Some(ext) = sniff_raster_format(buf) {
-        return Some(ext.to_owned());
-    }
-
-    if buf.starts_with(&JXL_CODESTREAM_MAGIC) || buf.starts_with(&JXL_CONTAINER_MAGIC) {
-        return Some("jxl".to_owned());
-    }
-
+    if buf.starts_with(&[0xFF, 0xD8])                     { return Some(ImageFormat::Jpeg); }
+    if buf.starts_with(&[0x89, 0x50, 0x4E, 0x47])         { return Some(ImageFormat::Png);  }
+    if buf.starts_with(&[0x42, 0x4D])                      { return Some(ImageFormat::Bmp);  }
+    if buf.starts_with(b"GIF8")                            { return Some(ImageFormat::Gif);  }
+    if buf.starts_with(&[0x49, 0x49, 0x2A, 0x00])
+        || buf.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])     { return Some(ImageFormat::Tiff); }
+    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00])          { return Some(ImageFormat::Ico);  }
+    if buf.len() >= 12
+        && buf.starts_with(b"RIFF")
+        && &buf[8..12] == b"WEBP"                          { return Some(ImageFormat::WebP); }
     None
 }
 
-/// Map image-crate format detection to a canonical extension string.
-fn sniff_raster_format(header: &[u8]) -> Option<&'static str> {
+/// Map an `ImageFormat` to the canonical extension string used throughout this
+/// module (e.g. `ImageFormat::Jpeg` → `"jpg"`).
+fn format_to_ext(fmt: image::ImageFormat) -> Option<&'static str> {
     use image::ImageFormat;
-
-    let reader = image::ImageReader::new(std::io::Cursor::new(header))
-        .with_guessed_format()
-        .ok()?;
-
-    match reader.format()? {
+    match fmt {
         ImageFormat::Png  => Some("png"),
         ImageFormat::Jpeg => Some("jpg"),
         ImageFormat::Bmp  => Some("bmp"),
@@ -199,17 +195,43 @@ fn sniff_raster_format(header: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Clamp a float sample to [0, 1] and scale to a `u8`.
-fn f32_to_u8(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+/// Read the first 32 bytes of the file to identify its format.
+///
+/// Returns a lowercase extension string, or `None` if unrecognised.
+fn sniff_format(path: &Path) -> Option<String> {
+    use std::io::Read;
+
+    let mut buf = [0u8; 32];
+    let n   = std::fs::File::open(path).ok()?.read(&mut buf).ok()?;
+    let buf = &buf[..n];
+
+    // Common raster formats via our single magic-byte table.
+    if let Some(ext) = magic_to_format(buf).and_then(format_to_ext) {
+        return Some(ext.to_owned());
+    }
+
+    // JXL has its own signatures, not handled by the image crate.
+    if buf.starts_with(&JXL_CODESTREAM_MAGIC) || buf.starts_with(&JXL_CONTAINER_MAGIC) {
+        return Some("jxl".to_owned());
+    }
+
+    None
+}
+
+/// Read a small header from `path` and return the detected `ImageFormat`.
+fn read_magic(path: &Path) -> Result<Option<image::ImageFormat>, BoxError> {
+    use std::io::Read;
+    let mut buf = [0u8; 12];
+    let n = std::fs::File::open(path)?.read(&mut buf)?;
+    Ok(magic_to_format(&buf[..n]))
 }
 
 // ── Decoders ──────────────────────────────────────────────────────────────────
 
 /// Decode a standard raster image (BMP, PNG, JPEG, WebP, TIFF, ICO).
 ///
-/// `ByExtension` reads the first 12 bytes of the file and compares the magic
-/// bytes against the declared extension. If they disagree the function returns
+/// `ByExtension` reads the first 12 bytes and verifies that the magic bytes
+/// agree with the declared extension. If they disagree the function returns
 /// an error immediately — no decoding is attempted — so `load_image` falls
 /// through to `sniff_format` and returns `WrongExtension`, triggering the
 /// rename dialog. This is the only reliable approach: every image-crate API
@@ -221,19 +243,11 @@ fn f32_to_u8(v: f32) -> u8 {
 fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
     let img = match strategy {
         DecodeStrategy::ByExtension => {
-            // Map the declared extension to the format we expect to see.
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let declared = image::ImageFormat::from_extension(ext)
                 .ok_or_else(|| format!("unsupported extension: {ext}"))?;
 
-            // Read the first 12 bytes and derive the actual format from magic.
-            let actual = {
-                use std::io::Read;
-                let mut buf = [0u8; 12];
-                let n = std::fs::File::open(path)?.read(&mut buf)?;
-                magic_to_format(&buf[..n])
-            };
-
+            let actual = read_magic(path)?;
             if actual != Some(declared) {
                 return Err(format!(
                     "magic bytes do not match extension .{ext}"
@@ -252,25 +266,6 @@ fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, 
     let rgba   = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
-}
-
-/// Identify an image format from its magic bytes.
-/// Returns `None` when the bytes do not match any supported raster format.
-fn magic_to_format(buf: &[u8]) -> Option<image::ImageFormat> {
-    use image::ImageFormat;
-    // Each pattern uses only as many bytes as are strictly necessary.
-    if buf.starts_with(&[0xFF, 0xD8])                        { return Some(ImageFormat::Jpeg); }
-    if buf.starts_with(&[0x89, 0x50, 0x4E, 0x47])            { return Some(ImageFormat::Png);  }
-    if buf.starts_with(&[0x42, 0x4D])                        { return Some(ImageFormat::Bmp);  }
-    if buf.starts_with(b"GIF8")                              { return Some(ImageFormat::Gif);  }
-    if buf.starts_with(&[0x49, 0x49, 0x2A, 0x00])
-        || buf.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])       { return Some(ImageFormat::Tiff); }
-    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00])            { return Some(ImageFormat::Ico);  }
-    // WebP: "RIFF" at [0..4] and "WEBP" at [8..12]
-    if buf.len() >= 12
-        && buf.starts_with(b"RIFF")
-        && &buf[8..12] == b"WEBP"                            { return Some(ImageFormat::WebP); }
-    None
 }
 
 fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
@@ -340,6 +335,11 @@ fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
 
     let rgba = jxl_samples_to_rgba8(&samples, pixel_count, channels);
     Ok(DecodedImage::single(rgba, width as u32, height as u32))
+}
+
+/// Clamp a float sample to [0, 1] and scale to a `u8`.
+fn f32_to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Convert interleaved float samples (1–4 channels) to RGBA8.
