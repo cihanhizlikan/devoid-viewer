@@ -616,13 +616,18 @@ fn show_error_dialog(msg: &str) {
 /// `5 (2).jpg`, etc.
 /// Returns `Some(new_path)` when the rename succeeded, `None` otherwise.
 fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
-    // Skip silently when the parent is read-only. If we cannot determine
-    // write access we offer the rename optimistically — the filesystem will
-    // reject it and we show an error.
-    let parent_readonly = path.parent()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .is_some_and(|m| m.permissions().readonly());
-    if parent_readonly { return None; }
+    // Check whether the file is actually writable before showing the dialog.
+    // We probe by opening the file with write access — this is the only
+    // reliable cross-platform test. Checking the parent directory's
+    // read-only attribute is NOT used because on Windows all shell folders
+    // (Desktop, Downloads, Pictures, etc.) have that attribute set by
+    // convention for Explorer's custom-view mechanism, even though they are
+    // fully writable. Checking the file itself avoids that false positive.
+    let writable = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .is_ok();
+    if !writable { return None; }
 
     // Resolve the target path, appending a counter if it already exists.
     let new_path = unique_rename_target(path, correct_ext);

@@ -103,8 +103,7 @@ pub fn load_image(path: &Path) -> LoadOutcome {
             }
         }
         Some(_) => {
-            // Sniffed the same extension but it still failed — the file is
-            // corrupt or truncated.
+            // Sniffed the same extension but it still failed — corrupt or truncated.
             let desc = if ext.is_empty() { "file".into() } else { format!(".{ext} file") };
             LoadOutcome::Unsupported(format!("Failed to decode {desc}"))
         }
@@ -209,13 +208,41 @@ fn f32_to_u8(v: f32) -> u8 {
 
 /// Decode a standard raster image (BMP, PNG, JPEG, WebP, TIFF, ICO).
 ///
-/// `ByExtension` trusts the file extension — the fast, normal path.
-/// `ByContent` reads the file header to detect the format, ignoring the
-/// extension — used when the extension was found to be wrong.
+/// `ByExtension` reads the first 12 bytes of the file and compares the magic
+/// bytes against the declared extension. If they disagree the function returns
+/// an error immediately — no decoding is attempted — so `load_image` falls
+/// through to `sniff_format` and returns `WrongExtension`, triggering the
+/// rename dialog. This is the only reliable approach: every image-crate API
+/// that accepts a path (`image::open`, `with_guessed_format`) sniffs the
+/// header internally and succeeds silently on misnamed files.
+///
+/// `ByContent` decodes purely from the file header, ignoring the extension
+/// entirely — used when the extension was already confirmed to be wrong.
 fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
     let img = match strategy {
-        DecodeStrategy::ByExtension => image::open(path)?,
-        DecodeStrategy::ByContent   => {
+        DecodeStrategy::ByExtension => {
+            // Map the declared extension to the format we expect to see.
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let declared = image::ImageFormat::from_extension(ext)
+                .ok_or_else(|| format!("unsupported extension: {ext}"))?;
+
+            // Read the first 12 bytes and derive the actual format from magic.
+            let actual = {
+                use std::io::Read;
+                let mut buf = [0u8; 12];
+                let n = std::fs::File::open(path)?.read(&mut buf)?;
+                magic_to_format(&buf[..n])
+            };
+
+            if actual != Some(declared) {
+                return Err(format!(
+                    "magic bytes do not match extension .{ext}"
+                ).into());
+            }
+
+            image::open(path)?
+        }
+        DecodeStrategy::ByContent => {
             let file = std::fs::File::open(path)?;
             image::ImageReader::new(std::io::BufReader::new(file))
                 .with_guessed_format()?
@@ -225,6 +252,25 @@ fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, 
     let rgba   = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     Ok(DecodedImage::single(rgba.into_raw(), w, h))
+}
+
+/// Identify an image format from its magic bytes.
+/// Returns `None` when the bytes do not match any supported raster format.
+fn magic_to_format(buf: &[u8]) -> Option<image::ImageFormat> {
+    use image::ImageFormat;
+    // Each pattern uses only as many bytes as are strictly necessary.
+    if buf.starts_with(&[0xFF, 0xD8])                        { return Some(ImageFormat::Jpeg); }
+    if buf.starts_with(&[0x89, 0x50, 0x4E, 0x47])            { return Some(ImageFormat::Png);  }
+    if buf.starts_with(&[0x42, 0x4D])                        { return Some(ImageFormat::Bmp);  }
+    if buf.starts_with(b"GIF8")                              { return Some(ImageFormat::Gif);  }
+    if buf.starts_with(&[0x49, 0x49, 0x2A, 0x00])
+        || buf.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])       { return Some(ImageFormat::Tiff); }
+    if buf.starts_with(&[0x00, 0x00, 0x01, 0x00])            { return Some(ImageFormat::Ico);  }
+    // WebP: "RIFF" at [0..4] and "WEBP" at [8..12]
+    if buf.len() >= 12
+        && buf.starts_with(b"RIFF")
+        && &buf[8..12] == b"WEBP"                            { return Some(ImageFormat::WebP); }
+    None
 }
 
 fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
