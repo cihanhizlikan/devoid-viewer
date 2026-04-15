@@ -20,6 +20,9 @@ image = { version = "0.25", default-features = false, features = [
 # JPEG XL
 jxl-oxide = { version = "0.10" }
 
+# ── Filesystem watching ───────────────────────────────────────
+notify-debouncer-mini = { version = "0.4", default-features = false }
+
 # ── Threading ─────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 

@@ -30,7 +30,12 @@ use std::{
 use crossbeam_channel::{bounded, Receiver, Sender};
 use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
+use notify_debouncer_mini::{new_debouncer, Debouncer};
 use softbuffer::Surface;
+
+/// Opaque handle that keeps the filesystem watcher alive.
+/// Dropping it unregisters the watch. Stored in App as Option<DirWatcher>.
+type DirWatcher = Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{
@@ -89,6 +94,9 @@ enum Msg {
         path:   PathBuf,
         result: Result<(), String>,
     },
+    /// The watched directory changed (file added or removed).
+    /// Triggers a navigator rebuild on the UI thread.
+    DirectoryChanged,
 }
 
 /// Zero-size token injected by background threads to wake the sleeping
@@ -170,6 +178,15 @@ struct App {
     fullscreen:     bool,
     /// Timestamp of the last left-click, for double-click detection.
     last_click:     Option<Instant>,
+    /// Active filesystem watcher for the current directory.
+    /// Replaced whenever the watched directory changes. Dropping it
+    /// unregisters the OS watch handle.
+    dir_watcher:    Option<DirWatcher>,
+    /// The directory currently being watched. Tracked separately from
+    /// navigator.current_dir() because set_current() updates the navigator
+    /// before apply_image() runs, making the navigator an unreliable signal
+    /// for whether the watcher needs to be (re)installed.
+    watched_dir:    Option<PathBuf>,
 }
 
 impl App {
@@ -190,6 +207,8 @@ impl App {
             maximized:      false,
             fullscreen:     false,
             last_click:     None,
+            dir_watcher:    None,
+            watched_dir:    None,
         }
     }
 
@@ -309,7 +328,23 @@ impl App {
         self.current_image = Some(img);
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
+
+        // Rebuild the navigator for this path. If the directory changed,
+        // start watching the new directory.
+        // Start or replace the directory watcher whenever the watched
+        // directory differs from the one we are currently watching.
+        // We compare against dir_watcher's perspective, not the navigator,
+        // because set_current (called by open_image before the decode thread
+        // runs) already updates current_dir before apply_image is called.
+        let new_dir = path.parent().map(PathBuf::from);
+        let watching = self.watched_dir.as_deref();
+        if new_dir.as_deref() != watching {
+            if let Some(ref dir) = new_dir {
+                self.watch_dir(dir, proxy);
+            }
+        }
         self.navigator.set_current(path);
+
         self.preload_adjacent(proxy);
         self.reset_animation();
         resize
@@ -319,6 +354,64 @@ impl App {
         self.current_image = None;
         self.current_path  = None;
         self.reset_animation();
+    }
+
+    /// Start watching `dir` for file additions and deletions.
+    ///
+    /// Replaces any existing watcher (dropping it unregisters the old watch).
+    /// Events are debounced with a 50 ms window to coalesce rapid bursts
+    /// (e.g. a batch copy) into a single rebuild.
+    fn watch_dir(&mut self, dir: &Path, proxy: &Proxy) {
+        let tx    = self.msg_tx.clone();
+        let proxy = proxy.clone();
+
+        let result = new_debouncer(
+            Duration::from_millis(50),
+            move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
+                if events.is_ok() {
+                    let _ = tx.send(Msg::DirectoryChanged);
+                    let _ = proxy.send_event(WakeUp);
+                }
+            },
+        );
+
+        match result {
+            Ok(mut debouncer) => {
+                use notify_debouncer_mini::notify::RecursiveMode;
+                if debouncer.watcher().watch(dir, RecursiveMode::NonRecursive).is_ok() {
+                    self.dir_watcher = Some(debouncer);
+                    self.watched_dir = Some(dir.to_path_buf());
+                }
+                // If watch() fails (e.g. temp folder on a virtual FS),
+                // navigation still works — the sibling list is just static.
+            }
+            Err(_) => {
+                self.dir_watcher = None;
+                self.watched_dir = None;
+            }
+        }
+    }
+
+    /// Called when the OS reports a change in the watched directory.
+    ///
+    /// Rebuilds the navigator's sibling list. If the currently displayed
+    /// file is no longer present (externally deleted), navigates to the
+    /// next available sibling or clears the display.
+    fn on_directory_changed(&mut self, proxy: &Proxy) {
+        self.preload_cache.clear();
+        let current = self.current_path.clone();
+        self.navigator.rebuild_current(current.as_deref());
+
+        let still_present = current.as_ref().is_some_and(|p| {
+            self.navigator.files().any(|f| f == p)
+        });
+
+        if !still_present {
+            match self.navigator.current().cloned() {
+                Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
+                None       => self.clear_image(),
+            }
+        }
     }
 
     /// Speculatively decode both neighbours so navigation feels instant.
@@ -371,10 +464,34 @@ impl App {
     // ── Navigation ────────────────────────────────────────────────────────────
 
     fn navigate(&mut self, forward: bool, proxy: &Proxy) {
-        let next = if forward { self.navigator.next() } else { self.navigator.prev() };
-        if let Some(path) = next {
-            self.open_image(path, OpenMode::Navigate, proxy);
+        // Skip any neighbours that no longer exist on disk (externally
+        // deleted since the sibling list was last built). We loop rather
+        // than stepping once so that deleting several files in a row never
+        // leaves the user stuck on a missing entry.
+        let len = self.navigator.files().count();
+        for _ in 0..len {
+            let next = if forward {
+                self.navigator.next()
+            } else {
+                self.navigator.prev()
+            };
+            match next {
+                None => break,
+                Some(path) if path.exists() => {
+                    self.open_image(path, OpenMode::Navigate, proxy);
+                    return;
+                }
+                Some(path) => {
+                    // File is gone — remove it from the list and try the
+                    // next sibling. The loop counter prevents infinite
+                    // cycling if every file disappears simultaneously.
+                    self.navigator.remove(&path);
+                    self.preload_cache.remove(&path);
+                }
+            }
         }
+        // No navigable sibling found — all files in the directory are gone.
+        self.clear_image();
     }
 
     // ── Deletion ──────────────────────────────────────────────────────────────
@@ -451,6 +568,9 @@ impl App {
                     if let Some(e) = self.on_deleted(path, result, proxy) {
                         dr.error_msg = Some(e);
                     }
+                }
+                Msg::DirectoryChanged => {
+                    self.on_directory_changed(proxy);
                 }
             }
         }

@@ -85,6 +85,25 @@ impl DirNavigator {
         self.files.get(self.index)
     }
 
+    /// Iterator over all paths in the current sibling list.
+    /// Used by `on_directory_changed` to check whether a path is still present.
+    pub fn files(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.iter()
+    }
+
+    /// Rebuild the sibling list in place after an OS-reported directory change.
+    ///
+    /// Re-locates the currently displayed file in the new sorted list so the
+    /// index stays accurate regardless of how many files were added or removed.
+    /// If the current file is no longer present the index is clamped — the
+    /// caller is responsible for detecting this and navigating away.
+    pub fn rebuild_current(&mut self, current_path: Option<&Path>) {
+        self.rebuild();
+        self.index = current_path
+            .and_then(|p| self.files.iter().position(|f| f.as_path() == p))
+            .unwrap_or_else(|| self.index.min(self.files.len().saturating_sub(1)));
+    }
+
     // ── Private ───────────────────────────────────────────────────────────────
 
     /// Advance the index in `direction` and return the new current path.
