@@ -13,6 +13,7 @@
 //! - Archiver-safe path handling (no canonicalize / no \\?\ prefix)
 //! - Exact taskbar-excluded work-area clamping on Windows
 //! - Filename shown in the title bar
+//! - Live directory watching for external file additions/deletions
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -32,10 +33,6 @@ use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 use softbuffer::Surface;
-
-/// Opaque handle that keeps the filesystem watcher alive.
-/// Dropping it unregisters the watch. Stored in App as Option<DirWatcher>.
-type DirWatcher = Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{
@@ -49,6 +46,14 @@ use winit::{
 #[cfg(windows)]
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
+// ── Type aliases ─────────────────────────────────────────────────────────────
+
+/// Opaque handle that keeps the filesystem watcher alive.
+/// Dropping it unregisters the watch.
+type DirWatcher = Debouncer<notify_debouncer_mini::notify::RecommendedWatcher>;
+
+type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Background colour (grey) for the blank state and transparent image regions.
@@ -59,6 +64,10 @@ const APP_NAME: &str = "Devoid Viewer";
 
 /// Maximum gap between two left-clicks that counts as a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// Debounce window for the directory watcher, coalescing rapid bursts
+/// (e.g. a batch copy) into a single rebuild.
+const DIR_WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 
 // ── Message types ─────────────────────────────────────────────────────────────
 
@@ -103,8 +112,6 @@ enum Msg {
 /// event loop after posting a `Msg`.
 #[derive(Debug)]
 struct WakeUp;
-
-type Proxy = winit::event_loop::EventLoopProxy<WakeUp>;
 
 // ── View snapshot ─────────────────────────────────────────────────────────────
 
@@ -178,13 +185,15 @@ struct App {
     fullscreen:     bool,
     /// Timestamp of the last left-click, for double-click detection.
     last_click:     Option<Instant>,
+
+    // ── Directory watching ────────────────────────────────────────────────────
     /// Active filesystem watcher for the current directory.
-    /// Replaced whenever the watched directory changes. Dropping it
+    /// Replaced whenever the watched directory changes; dropping it
     /// unregisters the OS watch handle.
     dir_watcher:    Option<DirWatcher>,
-    /// The directory currently being watched. Tracked separately from
-    /// navigator.current_dir() because set_current() updates the navigator
-    /// before apply_image() runs, making the navigator an unreliable signal
+    /// The directory currently being watched. Tracked separately from the
+    /// navigator because `set_current()` updates the navigator before
+    /// `apply_image()` runs, making the navigator an unreliable signal
     /// for whether the watcher needs to be (re)installed.
     watched_dir:    Option<PathBuf>,
 }
@@ -253,8 +262,6 @@ impl App {
             );
             window.set_maximized(false);
             if let Some(size) = self.pre_maximize.take() {
-                // request_inner_size is asynchronous — pending_center ensures
-                // center_window() fires after the resize has actually landed.
                 let _ = window.request_inner_size(size);
                 self.pending_center = true;
             }
@@ -308,8 +315,6 @@ impl App {
                 LoadOutcome::Unsupported(reason) =>
                     Msg::Unsupported { path, reason },
             };
-            // send() and send_event() only fail if the receiver is dropped,
-            // which means the UI thread has exited and the process is ending.
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
         });
@@ -329,16 +334,12 @@ impl App {
         self.current_path  = Some(path.clone());
         self.loading_path  = None;
 
-        // Rebuild the navigator for this path. If the directory changed,
-        // start watching the new directory.
-        // Start or replace the directory watcher whenever the watched
-        // directory differs from the one we are currently watching.
-        // We compare against dir_watcher's perspective, not the navigator,
-        // because set_current (called by open_image before the decode thread
-        // runs) already updates current_dir before apply_image is called.
+        // (Re)install the directory watcher when the parent directory changes.
+        // We compare against `watched_dir` rather than the navigator's
+        // `current_dir` because `open_image` calls `set_current` (updating
+        // the navigator) before the decode thread finishes and this runs.
         let new_dir = path.parent().map(PathBuf::from);
-        let watching = self.watched_dir.as_deref();
-        if new_dir.as_deref() != watching {
+        if new_dir.as_deref() != self.watched_dir.as_deref() {
             if let Some(ref dir) = new_dir {
                 self.watch_dir(dir, proxy);
             }
@@ -356,40 +357,35 @@ impl App {
         self.reset_animation();
     }
 
+    // ── Directory watching ────────────────────────────────────────────────────
+
     /// Start watching `dir` for file additions and deletions.
     ///
     /// Replaces any existing watcher (dropping it unregisters the old watch).
-    /// Events are debounced with a 50 ms window to coalesce rapid bursts
-    /// (e.g. a batch copy) into a single rebuild.
+    /// On any failure the watcher is simply absent — navigation still works,
+    /// the sibling list is just static until the next directory change.
     fn watch_dir(&mut self, dir: &Path, proxy: &Proxy) {
         let tx    = self.msg_tx.clone();
         let proxy = proxy.clone();
 
-        let result = new_debouncer(
-            Duration::from_millis(50),
-            move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
-                if events.is_ok() {
-                    let _ = tx.send(Msg::DirectoryChanged);
-                    let _ = proxy.send_event(WakeUp);
-                }
-            },
-        );
+        let ok = (|| {
+            let mut debouncer = new_debouncer(
+                DIR_WATCH_DEBOUNCE,
+                move |events: Result<Vec<notify_debouncer_mini::DebouncedEvent>, _>| {
+                    if events.is_ok() {
+                        let _ = tx.send(Msg::DirectoryChanged);
+                        let _ = proxy.send_event(WakeUp);
+                    }
+                },
+            ).ok()?;
 
-        match result {
-            Ok(mut debouncer) => {
-                use notify_debouncer_mini::notify::RecursiveMode;
-                if debouncer.watcher().watch(dir, RecursiveMode::NonRecursive).is_ok() {
-                    self.dir_watcher = Some(debouncer);
-                    self.watched_dir = Some(dir.to_path_buf());
-                }
-                // If watch() fails (e.g. temp folder on a virtual FS),
-                // navigation still works — the sibling list is just static.
-            }
-            Err(_) => {
-                self.dir_watcher = None;
-                self.watched_dir = None;
-            }
-        }
+            use notify_debouncer_mini::notify::RecursiveMode;
+            debouncer.watcher().watch(dir, RecursiveMode::NonRecursive).ok()?;
+            Some(debouncer)
+        })();
+
+        self.dir_watcher = ok;
+        self.watched_dir = self.dir_watcher.as_ref().map(|_| dir.to_path_buf());
     }
 
     /// Called when the OS reports a change in the watched directory.
@@ -402,9 +398,8 @@ impl App {
         let current = self.current_path.clone();
         self.navigator.rebuild_current(current.as_deref());
 
-        let still_present = current.as_ref().is_some_and(|p| {
-            self.navigator.files().any(|f| f == p)
-        });
+        let still_present = current.as_deref()
+            .is_some_and(|p| self.navigator.contains(p));
 
         if !still_present {
             match self.navigator.current().cloned() {
@@ -463,34 +458,27 @@ impl App {
 
     // ── Navigation ────────────────────────────────────────────────────────────
 
+    /// Navigate to the next or previous image, skipping siblings that no
+    /// longer exist on disk (externally deleted since the sibling list was
+    /// last built). The loop bound prevents infinite cycling if every file
+    /// disappears simultaneously.
     fn navigate(&mut self, forward: bool, proxy: &Proxy) {
-        // Skip any neighbours that no longer exist on disk (externally
-        // deleted since the sibling list was last built). We loop rather
-        // than stepping once so that deleting several files in a row never
-        // leaves the user stuck on a missing entry.
-        let len = self.navigator.files().count();
-        for _ in 0..len {
-            let next = if forward {
-                self.navigator.next()
-            } else {
-                self.navigator.prev()
-            };
+        for _ in 0..self.navigator.len() {
+            let next = if forward { self.navigator.next() } else { self.navigator.prev() };
             match next {
-                None => break,
+                None => return,
                 Some(path) if path.exists() => {
                     self.open_image(path, OpenMode::Navigate, proxy);
                     return;
                 }
-                Some(path) => {
-                    // File is gone — remove it from the list and try the
-                    // next sibling. The loop counter prevents infinite
-                    // cycling if every file disappears simultaneously.
-                    self.navigator.remove(&path);
-                    self.preload_cache.remove(&path);
+                Some(gone) => {
+                    self.navigator.remove(&gone);
+                    self.preload_cache.remove(&gone);
                 }
             }
         }
-        // No navigable sibling found — all files in the directory are gone.
+        // Every sibling is gone.
+        self.preload_cache.clear();
         self.clear_image();
     }
 
@@ -605,10 +593,8 @@ fn fit_scale(img_w: u32, img_h: u32, win_w: u32, win_h: u32) -> f32 {
 #[inline]
 fn nearest(pixels: &[u8], w: u32, sx: f32, sy: f32) -> [u8; 4] {
     let x = (sx as u32).min(w - 1);
-    let y = (sy as u32).min(u32::MAX); // clamped by caller via off_y bounds
+    let y = sy as u32; // caller guarantees sy ∈ [0, height)
     let i = (y as usize * w as usize + x as usize) * 4;
-    // SAFETY: callers guarantee sy is within [0, height); the slice is
-    // exactly width*height*4 bytes. Using try_into for a bounds-checked copy.
     pixels[i..i + 4].try_into().unwrap()
 }
 
@@ -656,7 +642,6 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
         let row_start = dy as usize * win_w as usize;
         let row = &mut buf[row_start..row_start + win_w as usize];
 
-        // Rows entirely above or below the image: fill with background.
         if dy < off_y || dy >= off_y + dst_h {
             row.fill(bg);
             continue;
@@ -664,12 +649,10 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 
         let sy = (dy - off_y) as f32 * inv_scale;
 
-        // Left margin.
         let img_x0 = off_x.max(0) as usize;
         let img_x1 = (off_x + dst_w).min(win_w as i32) as usize;
         row[..img_x0].fill(bg);
 
-        // Image region.
         for dx in img_x0..img_x1 {
             let [r, g, b, a] = nearest(
                 pixels, iw,
@@ -679,7 +662,6 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
             row[dx] = composite(r, g, b, a);
         }
 
-        // Right margin.
         row[img_x1..].fill(bg);
     }
 }
@@ -804,7 +786,6 @@ fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
         }
     }
 
-    // Unreachable in practice — u32::MAX files cannot exist in one directory.
     unreachable!("could not find a unique rename target")
 }
 
@@ -879,14 +860,11 @@ fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
 ///
 /// On Windows the work area origin and bounds come from `SPI_GETWORKAREA`,
 /// so the window is always placed clear of the taskbar regardless of which
-/// edge it is on. The outer window top is pinned to the work area top and
-/// the outer bottom is clamped to the work area bottom.
+/// edge it is on.
 fn center_window(window: &Window) {
     let Some(mon) = current_or_any_monitor(window) else { return };
-    let ws = window.outer_size();   // physical pixels, includes title bar
+    let ws = window.outer_size();
 
-    // On Windows use the exact work area rect (excludes taskbar on any edge).
-    // Elsewhere fall back to 90% × 85% of the monitor anchored at its origin.
     #[cfg(windows)]
     let (wa_left, wa_top, wa_right, wa_bottom) =
         work_area_rect().unwrap_or_else(|| heuristic_work_area(&mon));
@@ -899,8 +877,8 @@ fn center_window(window: &Window) {
 
     let x = wa_left + (wa_w - ws.width as i32) / 2;
 
-    // If the window is taller than the work area, pin to the top so the
-    // title bar remains accessible; never let the bottom exceed wa_bottom.
+    // Pin to the top if taller than the work area so the title bar stays
+    // accessible; never let the bottom exceed wa_bottom.
     let max_y = wa_bottom - ws.height as i32;
     let y     = (wa_top + (wa_h - ws.height as i32) / 2)
                     .max(wa_top)
@@ -920,7 +898,6 @@ fn update_title(window: &Window, filename: Option<&str>) {
 
 /// Interpret a scroll delta as a navigation direction.
 /// Returns `true` for forward (next image) and `false` for backward (previous).
-/// Convention: scroll down or right → next, scroll up or left → previous.
 #[inline]
 fn scroll_is_forward(delta: &MouseScrollDelta) -> bool {
     match delta {
@@ -955,9 +932,7 @@ fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
 /// Called once before the event loop to overwrite the DWM white fill that
 /// appears on every new Win32 window before the application first paints.
 ///
-/// Errors are intentionally swallowed: this is a cosmetic pre-paint. If it
-/// fails the initial white flash persists briefly, but the event loop's
-/// first `RedrawRequested` will paint correctly regardless.
+/// Errors are intentionally swallowed: this is a cosmetic pre-paint.
 fn paint_background(surface: &mut Surface<Arc<Window>, Arc<Window>>, window: &Window) {
     let size  = window.inner_size();
     let win_w = NonZeroU32::new(size.width.max(1)).unwrap();
@@ -989,13 +964,8 @@ fn quit() -> ! {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
-    // Use the raw argument path — never canonicalize.
-    // `std::fs::canonicalize` prepends `\\?\` on Windows, which breaks the
-    // image crate and causes silent failures for archiver temp paths.
     let initial_path = std::env::args().nth(1).map(PathBuf::from);
 
-    // Header-only dimension probe lets the window appear at the correct size
-    // immediately, while the full decode runs on a background thread.
     let (init_w, init_h) = initial_path.as_deref()
         .and_then(image_size_hint)
         .unwrap_or((800, 600));
@@ -1014,8 +984,7 @@ fn main() {
     // SC_MAXIMIZE (title-bar double-click and the maximise button)
     //   Suppress OS handling so `toggle_maximize()` is the single code path
     //   for maximise — giving unified behaviour with the client-area
-    //   double-click. The title-bar double-click also fires `MouseInput`
-    //   in winit, so suppressing SC_MAXIMIZE here is sufficient.
+    //   double-click.
     #[cfg(windows)]
     el_builder.with_msg_hook(|msg| {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1026,7 +995,7 @@ fn main() {
             if (*msg).message == WM_SYSCOMMAND {
                 match ((*msg).wParam & 0xFFF0) as u32 {
                     SC_CLOSE    => { PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0); }
-                    SC_MAXIMIZE => { return true; }  // suppress; MouseInput fires instead
+                    SC_MAXIMIZE => { return true; }
                     _           => {}
                 }
             }
@@ -1037,9 +1006,6 @@ fn main() {
     let event_loop = el_builder.build().expect("event loop");
     let proxy      = event_loop.create_proxy();
 
-    // Hide the window when an image argument is provided so the user sees it
-    // appear at the correct size and position rather than watching it resize.
-    // Without an argument show immediately as a drag-and-drop target.
     let start_hidden = initial_path.is_some();
 
     let window = Arc::new(
@@ -1077,7 +1043,6 @@ fn main() {
         });
 
         match event {
-            // ── Background thread results ─────────────────────────────────────
             Event::UserEvent(WakeUp) => {
                 let dr = app.drain_messages(&proxy);
 
@@ -1109,14 +1074,12 @@ fn main() {
                 window.request_redraw();
             }
 
-            // ── Animation tick ────────────────────────────────────────────────
             Event::NewEvents(_) => {
                 if app.tick_animation() {
                     window.request_redraw();
                 }
             }
 
-            // ── Window events ─────────────────────────────────────────────────
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => quit(),
 

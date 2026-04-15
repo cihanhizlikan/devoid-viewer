@@ -85,10 +85,14 @@ impl DirNavigator {
         self.files.get(self.index)
     }
 
-    /// Iterator over all paths in the current sibling list.
-    /// Used by `on_directory_changed` to check whether a path is still present.
-    pub fn files(&self) -> impl Iterator<Item = &PathBuf> {
-        self.files.iter()
+    /// Number of image files in the current sibling list.
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    /// Whether `path` is present in the current sibling list.
+    pub fn contains(&self, path: &Path) -> bool {
+        self.files.iter().any(|f| f.as_path() == path)
     }
 
     /// Rebuild the sibling list in place after an OS-reported directory change.
