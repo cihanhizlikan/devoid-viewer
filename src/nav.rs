@@ -86,6 +86,7 @@ impl DirNavigator {
     }
 
     /// Number of image files in the current sibling list.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.files.len()
     }
