@@ -484,13 +484,23 @@ impl App {
 
     // ── Deletion ──────────────────────────────────────────────────────────────
 
+    /// Move the current file to the Recycle Bin on a background thread.
+    ///
+    /// Recycling, not deleting, so a mistaken Delete is undoable. Where the
+    /// volume has no Recycle Bin (some network shares and removable drives)
+    /// the shell itself warns before deleting permanently.
     fn request_delete(&mut self, proxy: &Proxy) {
         let Some(path) = self.current_path.clone() else { return };
         self.deleting = true;
         let tx    = self.msg_tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            let result = std::fs::remove_file(&path).map_err(|e| e.to_string());
+            // `trash` unwraps a failed COM instantiation internally. Catch
+            // that so a `Deleted` message always arrives and `deleting`
+            // cannot stay stuck at `true`.
+            let result = std::panic::catch_unwind(|| trash::delete(&path))
+                .map_err(|_| "the Recycle Bin is unavailable".to_owned())
+                .and_then(|r| r.map_err(|e| e.to_string()));
             let _ = tx.send(Msg::Deleted { path, result });
             let _ = proxy.send_event(WakeUp);
         });
@@ -653,13 +663,13 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
         let img_x1 = (off_x + dst_w).min(win_w as i32) as usize;
         row[..img_x0].fill(bg);
 
-        for dx in img_x0..img_x1 {
+        for (dx, px) in (img_x0..).zip(&mut row[img_x0..img_x1]) {
             let [r, g, b, a] = nearest(
                 pixels, iw,
                 (dx as i32 - off_x) as f32 * inv_scale,
                 sy,
             );
-            row[dx] = composite(r, g, b, a);
+            *px = composite(r, g, b, a);
         }
 
         row[img_x1..].fill(bg);
@@ -682,7 +692,7 @@ fn confirm_delete_dialog(filename: &str) -> bool {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
             MessageBoxW, MB_ICONWARNING, MB_YESNO, IDYES,
         };
-        let text = to_wide(&format!("Permanently delete\n\n{filename}?"));
+        let text = to_wide(&format!("Move to the Recycle Bin?\n\n{filename}"));
         let cap  = to_wide("Delete Image");
         unsafe {
             MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES
@@ -1164,7 +1174,8 @@ fn main() {
                     if surface.resize(nzw, nzh).is_err() { return; }
                     let Ok(mut buf) = surface.buffer_mut() else { return; };
                     render(&mut buf, win_w, win_h, app.view());
-                    if buf.present().is_err() { return; }
+                    // Nothing to recover: the next RedrawRequested repaints.
+                    let _ = buf.present();
                 }
 
                 _ => {}
@@ -1173,4 +1184,107 @@ fn main() {
             _ => {}
         }
     }).expect("event loop error");
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loader::Frame;
+
+    const BG_PIXEL: u32 = 0x002A_2A2A;
+
+    fn single_frame(width: u32, height: u32, pixels: Vec<u8>) -> DecodedImage {
+        DecodedImage { frames: vec![Frame { pixels, delay_ms: 0 }], width, height }
+    }
+
+    // ── Pixels ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pack_rgb_is_softbuffer_xrgb() {
+        assert_eq!(pack_rgb(0x12, 0x34, 0x56), 0x0012_3456);
+        assert_eq!(pack_rgb(BG, BG, BG), BG_PIXEL);
+    }
+
+    #[test]
+    fn composite_handles_opaque_transparent_and_partial_alpha() {
+        assert_eq!(composite(255, 0, 0, 255), 0x00FF_0000);
+        assert_eq!(composite(255, 0, 0, 0), BG_PIXEL);
+        // (255·128 + 42·127) / 255 = 148, (0·128 + 42·127) / 255 = 20
+        assert_eq!(composite(255, 0, 0, 128), pack_rgb(148, 20, 20));
+    }
+
+    #[test]
+    fn nearest_clamps_x_to_the_last_column() {
+        let pixels = [1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(nearest(&pixels, 2, 0.0, 0.0), [1, 2, 3, 4]);
+        assert_eq!(nearest(&pixels, 2, 9.0, 0.0), [5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn fit_scale_shrinks_to_the_tighter_dimension() {
+        assert_eq!(fit_scale(200, 100, 100, 100), 0.5);
+        assert_eq!(fit_scale(100, 400, 100, 100), 0.25);
+        assert_eq!(fit_scale(100, 100, 100, 100), 1.0);
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn render_without_an_image_fills_the_background() {
+        let mut buf = [0u32; 6];
+        render(&mut buf, 3, 2, None);
+        assert_eq!(buf, [BG_PIXEL; 6]);
+    }
+
+    #[test]
+    fn render_centres_the_image_with_background_around_it() {
+        let image = single_frame(1, 1, vec![255, 0, 0, 255]);
+        let mut buf = [0u32; 3];
+        // Window 3×1: scale = min(1/1, 3/1) = 1, so the pixel lands in the middle.
+        render(&mut buf, 3, 1, Some(View { image: &image, frame: 0 }));
+        assert_eq!(buf, [BG_PIXEL, 0x00FF_0000, BG_PIXEL]);
+    }
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn scrolling_down_or_right_goes_forward() {
+        use MouseScrollDelta::*;
+        assert!( scroll_is_forward(&LineDelta(0.0, -1.0)));
+        assert!(!scroll_is_forward(&LineDelta(0.0,  1.0)));
+        assert!( scroll_is_forward(&LineDelta(1.0,  0.0)));
+        assert!(!scroll_is_forward(&LineDelta(-1.0, 0.0)));
+        assert!( scroll_is_forward(&PixelDelta(PhysicalPosition::new(0.0, -3.0))));
+        assert!(!scroll_is_forward(&PixelDelta(PhysicalPosition::new(0.0,  3.0))));
+    }
+
+    // ── Rename target ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn rename_target_appends_a_counter_until_the_name_is_free() {
+        let dir  = tempfile::tempdir().unwrap();
+        let file = dir.path().join("5.png");
+        assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5.jpg"));
+
+        std::fs::write(dir.path().join("5.jpg"), b"").unwrap();
+        assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5 (1).jpg"));
+
+        std::fs::write(dir.path().join("5 (1).jpg"), b"").unwrap();
+        assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5 (2).jpg"));
+    }
+
+    // ── Conventions ───────────────────────────────────────────────────────────
+
+    /// The installer carries its own copy of the version; it must match Cargo's.
+    #[test]
+    fn installer_version_matches_cargo() {
+        let iss = include_str!("../devoid_viewer_setup.iss");
+        let version = iss.lines()
+            .find_map(|l| l.strip_prefix("#define AppVersion"))
+            .map(|rest| rest.trim().trim_matches('"'))
+            .expect("#define AppVersion in devoid_viewer_setup.iss");
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+    }
 }

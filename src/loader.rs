@@ -289,7 +289,7 @@ fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
             // Also clamp to ≥ 20 ms: some encoders emit 0-delay frames
             // as a hack for "as fast as possible", which would busy-loop
             // the event loop.
-            let delay_ms = if d == 0 { 100 } else { (n / d).max(20) };
+            let delay_ms = n.checked_div(d).map_or(100, |ms| ms.max(20));
             Frame { pixels: f.into_buffer().into_raw(), delay_ms }
         })
         .collect();
@@ -363,4 +363,222 @@ fn jxl_samples_to_rgba8(samples: &[f32], pixel_count: usize, channels: usize) ->
         d[3] = f32_to_u8(a);
     }
     rgba
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, ImageFormat, Rgb, RgbImage, Rgba, RgbaImage};
+    use std::io::Cursor;
+
+    /// A 2×1 image: opaque red, half-transparent blue.
+    fn sample_rgba() -> RgbaImage {
+        RgbaImage::from_fn(2, 1, |x, _| {
+            if x == 0 { Rgba([255, 0, 0, 255]) } else { Rgba([0, 0, 255, 128]) }
+        })
+    }
+
+    /// Encode the sample in `format`. JPEG has no alpha channel, so it
+    /// gets an RGB image instead.
+    fn encode(format: ImageFormat) -> Vec<u8> {
+        let img = match format {
+            ImageFormat::Jpeg => DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 1, Rgb([255, 0, 0]))),
+            _                 => DynamicImage::ImageRgba8(sample_rgba()),
+        };
+        let mut bytes = Cursor::new(Vec::new());
+        img.write_to(&mut bytes, format).unwrap();
+        bytes.into_inner()
+    }
+
+    fn write(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn expect_ok(outcome: LoadOutcome) -> DecodedImage {
+        match outcome {
+            LoadOutcome::Ok(img)                => img,
+            LoadOutcome::WrongExtension(_, ext) => panic!("expected Ok, got WrongExtension({ext})"),
+            LoadOutcome::Unsupported(reason)    => panic!("expected Ok, got Unsupported({reason})"),
+        }
+    }
+
+    // ── Extension filter ──────────────────────────────────────────────────────
+
+    #[test]
+    fn supported_extensions_are_matched_case_insensitively() {
+        assert!(is_supported(Path::new("a.PNG")));
+        assert!(is_supported(Path::new("dir/b.jxl")));
+        assert!(is_supported(Path::new("c.Tif")));
+        assert!(!is_supported(Path::new("d.svg")));
+        assert!(!is_supported(Path::new("e.txt")));
+        assert!(!is_supported(Path::new("png")));
+    }
+
+    /// The installer registers file associations by hand; every format we
+    /// open must be offered there, and nothing we cannot open.
+    #[test]
+    fn installer_associates_exactly_the_supported_extensions() {
+        let iss = include_str!("../devoid_viewer_setup.iss");
+        let mut associated: Vec<&str> = iss.lines()
+            .filter(|l| l.contains("\\OpenWithProgIds"))
+            .filter_map(|l| l.split("Classes\\.").nth(1)?.split('\\').next())
+            .collect();
+        associated.sort_unstable();
+        associated.dedup();
+        let mut supported = SUPPORTED_EXTENSIONS.to_vec();
+        supported.sort_unstable();
+        assert_eq!(associated, supported);
+    }
+
+    // ── Magic bytes ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn magic_bytes_identify_each_raster_format() {
+        use ImageFormat::*;
+        let cases: &[(&[u8], ImageFormat)] = &[
+            (&[0xFF, 0xD8, 0xFF],       Jpeg),
+            (&[0x89, b'P', b'N', b'G'], Png),
+            (b"BM",                     Bmp),
+            (b"GIF89a",                 Gif),
+            (&[0x49, 0x49, 0x2A, 0x00], Tiff),
+            (&[0x4D, 0x4D, 0x00, 0x2A], Tiff),
+            (&[0x00, 0x00, 0x01, 0x00], Ico),
+            (b"RIFF\0\0\0\0WEBP",       WebP),
+        ];
+        for (bytes, format) in cases {
+            assert_eq!(magic_to_format(bytes), Some(*format), "{bytes:02X?}");
+        }
+    }
+
+    #[test]
+    fn riff_without_webp_and_short_buffers_are_unknown() {
+        assert_eq!(magic_to_format(b"RIFF\0\0\0\0WAVE"), None);
+        assert_eq!(magic_to_format(b"RIFF"), None);
+        assert_eq!(magic_to_format(&[]), None);
+        assert_eq!(magic_to_format(&[0xFF]), None);
+    }
+
+    #[test]
+    fn both_jxl_signatures_are_sniffed() {
+        let dir       = tempfile::tempdir().unwrap();
+        let stream    = write(&dir, "a.bin", &[0xFF, 0x0A, 0, 0]);
+        let container = write(&dir, "b.bin", &JXL_CONTAINER_MAGIC);
+        assert_eq!(sniff_format(&stream).as_deref(), Some("jxl"));
+        assert_eq!(sniff_format(&container).as_deref(), Some("jxl"));
+    }
+
+    // ── Decoding ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn every_encodable_format_decodes_under_its_own_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        for (format, ext) in [
+            (ImageFormat::Png,  "png"),
+            (ImageFormat::Jpeg, "jpg"),
+            (ImageFormat::Jpeg, "jpeg"),
+            (ImageFormat::Bmp,  "bmp"),
+            (ImageFormat::Gif,  "gif"),
+            (ImageFormat::WebP, "webp"),
+            (ImageFormat::Tiff, "tiff"),
+            (ImageFormat::Tiff, "tif"),
+            (ImageFormat::Ico,  "ico"),
+        ] {
+            let path = write(&dir, &format!("img.{ext}"), &encode(format));
+            let img  = expect_ok(load_image(&path));
+            assert_eq!((img.width, img.height), (2, 1), ".{ext}");
+            assert_eq!(img.frames.len(), 1, ".{ext}");
+            assert_eq!(img.frames[0].pixels.len(), 2 * 4, ".{ext}");
+        }
+    }
+
+    #[test]
+    fn png_pixels_round_trip_as_straight_rgba() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write(&dir, "a.png", &encode(ImageFormat::Png));
+        let img  = expect_ok(load_image(&path));
+        assert_eq!(img.frames[0].pixels, [255, 0, 0, 255, 0, 0, 255, 128]);
+    }
+
+    #[test]
+    fn a_misnamed_file_reports_its_real_extension() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write(&dir, "photo.jpg", &encode(ImageFormat::Png));
+        match load_image(&path) {
+            LoadOutcome::WrongExtension(img, ext) => {
+                assert_eq!(ext, "png");
+                assert_eq!((img.width, img.height), (2, 1));
+            }
+            _ => panic!("expected WrongExtension"),
+        }
+    }
+
+    #[test]
+    fn a_file_without_extension_is_decoded_by_content() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write(&dir, "photo", &encode(ImageFormat::Png));
+        assert!(matches!(load_image(&path), LoadOutcome::WrongExtension(_, ext) if ext == "png"));
+    }
+
+    #[test]
+    fn a_truncated_file_is_unsupported_not_misnamed() {
+        let dir  = tempfile::tempdir().unwrap();
+        let png  = encode(ImageFormat::Png);
+        let path = write(&dir, "cut.png", &png[..png.len() / 2]);
+        match load_image(&path) {
+            LoadOutcome::Unsupported(reason) => assert_eq!(reason, "Failed to decode .png file"),
+            _ => panic!("expected Unsupported"),
+        }
+    }
+
+    #[test]
+    fn non_image_content_is_unsupported() {
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fake.png", b"definitely not an image");
+        match load_image(&path) {
+            LoadOutcome::Unsupported(reason) => assert_eq!(reason, "Not a recognised image format"),
+            _ => panic!("expected Unsupported"),
+        }
+    }
+
+    #[test]
+    fn animated_gif_keeps_every_frame_and_clamps_zero_delays() {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame as GifFrame};
+
+        let mut bytes = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut bytes);
+            for ms in [0, 50] {
+                let frame = GifFrame::from_parts(
+                    sample_rgba(), 0, 0, Delay::from_numer_denom_ms(ms, 1),
+                );
+                enc.encode_frame(frame).unwrap();
+            }
+        }
+        let dir  = tempfile::tempdir().unwrap();
+        let path = write(&dir, "anim.gif", &bytes);
+        let img  = expect_ok(load_image(&path));
+        assert!(img.is_animated());
+        let delays: Vec<u32> = img.frames.iter().map(|f| f.delay_ms).collect();
+        assert_eq!(delays, [20, 50]);
+    }
+
+    // ── JXL sample conversion ─────────────────────────────────────────────────
+
+    #[test]
+    fn jxl_samples_fill_missing_channels() {
+        assert_eq!(jxl_samples_to_rgba8(&[0.5],                1, 1), [128, 128, 128, 255]);
+        assert_eq!(jxl_samples_to_rgba8(&[1.0, 0.0],           1, 2), [255, 255, 255, 0]);
+        assert_eq!(jxl_samples_to_rgba8(&[1.0, 0.0, 0.0],      1, 3), [255, 0, 0, 255]);
+        assert_eq!(jxl_samples_to_rgba8(&[0.0, 1.0, 0.0, 0.5], 1, 4), [0, 255, 0, 128]);
+    }
+
+    #[test]
+    fn jxl_samples_are_clamped() {
+        assert_eq!(jxl_samples_to_rgba8(&[-0.5, 2.0, f32::NAN], 1, 3)[..3], [0, 255, 0]);
+    }
 }

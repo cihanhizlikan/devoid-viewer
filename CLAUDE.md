@@ -30,6 +30,11 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 - The toolchain is pinned in `rust-toolchain.toml`; architecture bans live in `clippy.toml` at `deny`.
 
 ## Working style
+- **Safe Rust only, `unsafe` only where Windows forces it.** Maintainer: *"If we're writing unmanaged code why
+  are we writing code in Rust in the first place."* Before writing FFI, look for a maintained crate with a safe
+  API. When FFI is genuinely unavoidable (a Win32 call no crate wraps), keep the `unsafe` block to the one call,
+  inside a safe function, with a `// SAFETY:` comment saying why it holds.
+
 Carried over from the maintainer's other projects:
 - **Evidence, not reasoning.** A fix is finished when it is measured, not when the code looks right. A hypothesis
   built from reading code is a candidate, never a conclusion. A measured "nothing to do" is a deliverable.

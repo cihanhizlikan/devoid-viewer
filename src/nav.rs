@@ -163,16 +163,63 @@ impl DirNavigator {
             })
             .collect();
 
-        // The sort allocates two Strings per comparison via to_string_lossy().
-        // This is acceptable: rebuild() runs only on directory change, not
-        // per-navigation, and avoids caching complexity.
-        paths.sort_by(|a, b| {
-            let a = a.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            let b = b.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-            human_sort(&a, &b)
-        });
+        sort_like_explorer(&mut paths);
         self.files = paths;
     }
+}
+
+// ── Explorer order ────────────────────────────────────────────────────────────
+
+/// Sort paths by file name in the order Explorer shows them.
+///
+/// Each sort key is built once per file rather than once per comparison.
+fn sort_like_explorer(paths: &mut Vec<PathBuf>) {
+    let mut keyed: Vec<(SortKey, PathBuf)> = paths
+        .drain(..)
+        .map(|p| (sort_key(&p), p))
+        .collect();
+    keyed.sort_by(|(a, _), (b, _)| compare_keys(a, b));
+    paths.extend(keyed.into_iter().map(|(_, p)| p));
+}
+
+/// Null-terminated UTF-16 file name, encoded losslessly from the `OsStr`.
+#[cfg(windows)]
+type SortKey = Vec<u16>;
+
+#[cfg(windows)]
+fn sort_key(path: &Path) -> SortKey {
+    use std::os::windows::ffi::OsStrExt;
+    path.file_name().unwrap_or_default()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+/// `StrCmpLogicalW` is the comparison Explorer uses for its default name
+/// sort: numeric runs by value, case-insensitive, locale-aware, with
+/// hyphens and apostrophes ignored. Reimplementing it in safe Rust could
+/// only approximate it, which is the bug this replaces.
+#[cfg(windows)]
+fn compare_keys(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
+    use windows_sys::Win32::UI::Shell::StrCmpLogicalW;
+    debug_assert!(a.last() == Some(&0) && b.last() == Some(&0));
+    // SAFETY: both slices are null-terminated (built by `sort_key`) and
+    // outlive the call, which only reads them.
+    let r = unsafe { StrCmpLogicalW(a.as_ptr(), b.as_ptr()) };
+    r.cmp(&0)
+}
+
+#[cfg(not(windows))]
+type SortKey = String;
+
+#[cfg(not(windows))]
+fn sort_key(path: &Path) -> SortKey {
+    path.file_name().unwrap_or_default().to_string_lossy().to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn compare_keys(a: &str, b: &str) -> std::cmp::Ordering {
+    human_sort(a, b)
 }
 
 /// Direction for single-step navigation.
@@ -182,10 +229,11 @@ enum Direction {
     Backward,
 }
 
-// ── Human / natural sort ──────────────────────────────────────────────────────
+// ── Human / natural sort (non-Windows fallback) ───────────────────────────────
 //
 // Compares runs of digits numerically so that "img2" < "img10".
 
+#[cfg(not(windows))]
 fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let mut ai = a.chars().peekable();
@@ -210,6 +258,7 @@ fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// Consume and return a run of ASCII digits as a `u64`, saturating on overflow.
+#[cfg(not(windows))]
 fn consume_number(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
     let mut n = 0u64;
     while let Some(&c) = iter.peek() {
@@ -218,4 +267,174 @@ fn consume_number(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
         iter.next();
     }
     n
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// A scratch directory holding empty files with the given names.
+    /// Content is irrelevant: the navigator only looks at names and types.
+    fn dir_with(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for name in names {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
+        dir
+    }
+
+    fn names(nav: &DirNavigator) -> Vec<String> {
+        nav.files.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn open(dir: &tempfile::TempDir, name: &str) -> DirNavigator {
+        let mut nav = DirNavigator::default();
+        nav.set_current(dir.path().join(name));
+        nav
+    }
+
+    fn current_name(nav: &DirNavigator) -> String {
+        nav.current().unwrap().file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    // ── Listing ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn lists_only_supported_files_case_insensitively() {
+        let dir = dir_with(&["a.png", "B.JPG", "notes.txt", "c.Webp", "no_extension"]);
+        fs::create_dir(dir.path().join("folder.png")).unwrap();
+        let nav = open(&dir, "a.png");
+        assert_eq!(names(&nav), ["a.png", "B.JPG", "c.Webp"]);
+    }
+
+    #[test]
+    fn numbers_sort_by_value() {
+        let dir = dir_with(&["img10.png", "img2.png", "img1.png"]);
+        assert_eq!(names(&open(&dir, "img1.png")), ["img1.png", "img2.png", "img10.png"]);
+    }
+
+    #[test]
+    fn letter_case_does_not_affect_order() {
+        let dir = dir_with(&["b.png", "A.png", "C.png"]);
+        assert_eq!(names(&open(&dir, "b.png")), ["A.png", "b.png", "C.png"]);
+    }
+
+    /// The disagreement that motivated `StrCmpLogicalW`: by code point `é`
+    /// sorts after `z`; Explorer sorts it with `e`.
+    #[cfg(windows)]
+    #[test]
+    fn accented_letters_sort_with_their_base_letter() {
+        let dir = dir_with(&["zebra.png", "\u{e9}lan.png", "eagle.png"]);
+        assert_eq!(names(&open(&dir, "eagle.png")), ["eagle.png", "\u{e9}lan.png", "zebra.png"]);
+    }
+
+    /// Explorer's word sort gives a hyphen almost no weight, so `a-c` sorts
+    /// as `ac` (after `ab`); by code point `-` sorts before every letter.
+    #[cfg(windows)]
+    #[test]
+    fn hyphens_are_ignored_like_explorer() {
+        let dir = dir_with(&["a-c.png", "ab.png"]);
+        assert_eq!(names(&open(&dir, "ab.png")), ["ab.png", "a-c.png"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn human_sort_compares_digit_runs_numerically() {
+        use std::cmp::Ordering::*;
+        assert_eq!(human_sort("img2", "img10"), Less);
+        assert_eq!(human_sort("img10", "img10"), Equal);
+        assert_eq!(human_sort("img", "img1"), Less);
+        assert_eq!(human_sort("99999999999999999999999", "1"), Greater);
+    }
+
+    // ── Navigation ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn next_and_prev_wrap_around() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let mut nav = open(&dir, "3.png");
+        assert_eq!(nav.next().unwrap(), dir.path().join("1.png"));
+        assert_eq!(nav.prev().unwrap(), dir.path().join("3.png"));
+        assert_eq!(nav.prev().unwrap(), dir.path().join("2.png"));
+    }
+
+    #[test]
+    fn peek_does_not_move() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let nav = open(&dir, "1.png");
+        assert_eq!(nav.peek_next().unwrap(), dir.path().join("2.png"));
+        assert_eq!(nav.peek_prev().unwrap(), dir.path().join("3.png"));
+        assert_eq!(current_name(&nav), "1.png");
+    }
+
+    #[test]
+    fn a_single_image_has_nowhere_to_go() {
+        let dir = dir_with(&["only.png", "readme.txt"]);
+        let mut nav = open(&dir, "only.png");
+        assert_eq!(nav.next(), None);
+        assert_eq!(nav.prev(), None);
+        assert_eq!(nav.peek_next(), None);
+    }
+
+    #[test]
+    fn removing_the_current_file_moves_to_the_next_sibling() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let mut nav = open(&dir, "2.png");
+        nav.remove(&dir.path().join("2.png"));
+        assert_eq!(current_name(&nav), "3.png");
+        assert!(!nav.contains(&dir.path().join("2.png")));
+    }
+
+    #[test]
+    fn removing_the_last_file_clamps_to_the_new_last() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let mut nav = open(&dir, "3.png");
+        nav.remove(&dir.path().join("3.png"));
+        assert_eq!(current_name(&nav), "2.png");
+    }
+
+    #[test]
+    fn rename_keeps_position() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let mut nav = open(&dir, "2.png");
+        nav.rename(&dir.path().join("2.png"), dir.path().join("2.jpg"));
+        assert_eq!(current_name(&nav), "2.jpg");
+        assert_eq!(nav.next().unwrap(), dir.path().join("3.png"));
+    }
+
+    #[test]
+    fn opening_a_file_in_another_directory_rebuilds_the_list() {
+        let first  = dir_with(&["a.png", "b.png"]);
+        let second = dir_with(&["x.png"]);
+        let mut nav = open(&first, "a.png");
+        nav.set_current(second.path().join("x.png"));
+        assert_eq!(names(&nav), ["x.png"]);
+    }
+
+    #[test]
+    fn rebuild_picks_up_external_changes_and_keeps_the_current_file() {
+        let dir = dir_with(&["1.png", "3.png"]);
+        let mut nav = open(&dir, "3.png");
+        fs::write(dir.path().join("2.png"), b"").unwrap();
+        fs::remove_file(dir.path().join("1.png")).unwrap();
+        nav.rebuild_current(Some(&dir.path().join("3.png")));
+        assert_eq!(names(&nav), ["2.png", "3.png"]);
+        assert_eq!(current_name(&nav), "3.png");
+    }
+
+    #[test]
+    fn rebuild_after_the_current_file_vanished_leaves_it_absent() {
+        let dir = dir_with(&["1.png", "2.png"]);
+        let mut nav = open(&dir, "2.png");
+        fs::remove_file(dir.path().join("2.png")).unwrap();
+        let gone = dir.path().join("2.png");
+        nav.rebuild_current(Some(&gone));
+        assert!(!nav.contains(&gone));
+        assert_eq!(current_name(&nav), "1.png");
+    }
 }

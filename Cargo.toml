@@ -26,12 +26,24 @@ notify-debouncer-mini = { version = "0.4", default-features = false }
 # ── Threading ─────────────────────────────────────────────────
 crossbeam-channel = "0.5"
 
+# ── Recycle Bin ───────────────────────────────────────────────
+# Safe wrapper over the shell's IFileOperation (FOF_ALLOWUNDO), so
+# Delete is undoable without hand-written COM. Default features off:
+# `chrono` only serves the freedesktop backend.
+trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
+
 # ── Windows API ───────────────────────────────────────────────
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
     "Win32_Foundation",
 ] }
+
+[dev-dependencies]
+# Per-test scratch directories that delete themselves; std has no way
+# to create a unique temporary directory.
+tempfile = "3"
 
 # ── Lints ─────────────────────────────────────────────────────
 # The bans in clippy.toml are architecture rules, not style, so a
