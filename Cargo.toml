@@ -33,6 +33,13 @@ windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
 ] }
 
+# ── Lints ─────────────────────────────────────────────────────
+# The bans in clippy.toml are architecture rules, not style, so a
+# violation stops the build instead of joining a warning count.
+# See docs/settled-decisions.md.
+[lints.clippy]
+disallowed_methods = "deny"
+
 [build-dependencies]
 winres = "0.1"
 
