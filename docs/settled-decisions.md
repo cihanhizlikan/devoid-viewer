@@ -125,6 +125,23 @@ Evidence and costs are in `docs/benchmarks.md` and the `feat(help)` commit bodie
 screen-reader requirement, which a message box shown alongside the overlay would meet more cheaply than replacing
 it.
 
+## The installer stays Inno Setup, moving to version 7 (reviewed 2026-11-01)
+Inno Setup was chosen over WiX 3 because WiX 3 cannot let the user choose a per-user or per-machine install
+(`docs/installer.md`). Re-checked against what the Rust ecosystem offers now; that reason still decides it.
+
+| Option | Why not |
+|---|---|
+| `dist` (cargo-dist) | Its MSI comes from bundled `cargo-wix`, built on WiX 3: the same scope limitation. Aimed at command-line tools (PATH, shell installers), not file associations. Its strength is the release pipeline. |
+| `cargo-packager` | MSI through WiX 3.11.2, pinned in its source; its NSIS output is a sideways move from Inno with less control over the registry details below. |
+| Velopack | Per-user only, and `VelopackApp::build().run()` must run at the top of `main`: a dependency in the exe and startup work, for auto-update a viewer does not need. |
+| WiX v6 / v7 | v6 added dual-purpose MSIs, but only inside a Burn bundle (bootstrapper exe + MSI) — the one option that answers the original objection, at the cost of a .NET toolchain and the Open Source Maintenance Fee EULA, which v7 requires accepting (no fee below US$10,000/year of revenue from projects using it). |
+| MSIX | Needs a code-signing certificate, virtualises the app's registry writes, and cannot register the `App Paths` entry archivers launch the viewer through. |
+
+**Inno Setup 7** (7.0.2, July 2026) builds a 64-bit installer to match the x64 exe, lifts the 260-character path
+limit, installs side by side with 6, and keeps the `.iss` largely as is. Upgrading to it is the action.
+**Re-opened by:** a need for MSI deployment through Intune or Group Policy (then a WiX v7 bundle), or for
+auto-update (then Velopack).
+
 ---
 
 # Open decisions

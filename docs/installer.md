@@ -12,6 +12,8 @@ It packages `target\release\DevoidViewer.exe`, an x86_64 build.
 
 WiX 3 evaluates component conditions during MSI costing, before any UI is shown, so the user cannot switch
 between a per-user and a per-machine install. Inno Setup does this with `IsAdminInstallMode` and the `HKA` root.
+The alternatives were reviewed again on 2026-11-01 (dist, cargo-packager, Velopack, WiX v6/v7, MSIX); see
+*The installer stays Inno Setup* in [settled-decisions.md](settled-decisions.md).
 
 ## Scope
 
