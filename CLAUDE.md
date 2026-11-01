@@ -24,6 +24,9 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   CI (`.github/workflows/ci.yml`) runs the same recipe on every push to `main` and every pull request, with clippy
   at `-D warnings`. **Change both together**: a step added to one and not the other means a local green that CI
   reds, or the reverse.
+- **After every commit, rebuild from clean**: `cargo clean`, then `cargo build --release --locked`, and report the
+  exit code and `target\release\DevoidViewer.exe` size. The exe on disk is then always a fresh build of the latest
+  commit, never a leftover. (`Cargo.toml` and `Cargo.lock` are source, not build output; they are never deleted.)
 - **Documentation lives in this repository as Markdown**, where it can be grepped, diffed and changed in the same
   commit as the code it describes: [docs/architecture.md](docs/architecture.md) for how the pieces fit,
   [docs/installer.md](docs/installer.md) for the Inno Setup script.
