@@ -50,6 +50,26 @@ uninstall, so `.jpg` lost `jpegfile` machine-wide, while changing nothing for an
 The same script deleted every user's `UserChoice` for all ten types at install (`deletekey`), whatever app it
 named.
 
+Two other ways to the default work as well, both measured on Windows 11: "Open with → Always use this app" in
+Explorer's prompt, and the Settings page. Both record the choice through Windows.
+
+### Windows 10 (not tested: no Windows 10 machine was available)
+
+- **Nothing meaningful was lost.** Windows 10 also resolves `UserChoice` first and gives new accounts Photos for
+  the common types, so the old task did as little there as on Windows 11, and had the same uninstall damage.
+- **Possible one-time prompt.** For types Windows 10 does not hand to Photos (at least `.jxl`; `.webp` and
+  `.ico` depending on the build), the old task on a per-machine install made Devoid Viewer open them directly.
+  Now Windows may ask "How do you want to open this file?" once per type.
+- **The finish-page link is a Windows 11 feature.** The `registeredAppUser`/`registeredAppMachine` parameters
+  open the app's own page on Windows 11. On Windows 10 the link is expected to open the general Default apps
+  page, where the app is under **Set defaults by app → Devoid Viewer → Manage**; the registration is what lists
+  it there. This is the one check to make on a Windows 10 machine.
+- **Gains:** a per-user install can now be made the default (the old task was per-machine only), and the
+  uninstall cleanup works as designed, since Windows 10 keeps the choice in `UserChoice`.
+
+Consumer Windows 10 left extended security updates in October 2026, so Windows-10-only behaviour gets no
+further work unless a user reports it.
+
 ## Uninstall
 
 - `taskkill` closes running instances before files are removed.
