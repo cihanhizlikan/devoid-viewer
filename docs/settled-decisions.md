@@ -137,10 +137,21 @@ Inno Setup was chosen over WiX 3 because WiX 3 cannot let the user choose a per-
 | WiX v6 / v7 | v6 added dual-purpose MSIs, but only inside a Burn bundle (bootstrapper exe + MSI) — the one option that answers the original objection, at the cost of a .NET toolchain and the Open Source Maintenance Fee EULA, which v7 requires accepting (no fee below US$10,000/year of revenue from projects using it). |
 | MSIX | Needs a code-signing certificate, virtualises the app's registry writes, and cannot register the `App Paths` entry archivers launch the viewer through. |
 
-**Inno Setup 7** (7.0.2, July 2026) builds a 64-bit installer to match the x64 exe, lifts the 260-character path
-limit, installs side by side with 6, and keeps the `.iss` largely as is. Upgrading to it is the action.
+**Inno Setup 7** keeps the `.iss` as is (it compiled unchanged, without warnings) and is where support continues;
+the installer now builds with 7.1.1. Its 64-bit installer was expected to be the gain, but measured 745,890
+bytes larger (+23%) for the same files and registry entries, so **the installer stays 32-bit** and only the
+install mode is x64 (`docs/installer.md`).
 **Re-opened by:** a need for MSI deployment through Intune or Group Policy (then a WiX v7 bundle), or for
 auto-update (then Velopack).
+
+## The installer registers for Default apps; it never sets the default (2026-11-01)
+Windows takes an extension's handler from the user's `UserChoice` (hashed, written only by Windows), and only
+without one from `HKLM\Software\Classes\.ext`, which Windows owns. The old "Set as default" task overwrote the
+latter, changed nothing for any user with a `UserChoice` (every Windows 11 account has one for Photos), and
+deleted Windows' value on uninstall: on the maintainer's machine eight of ten such values were Windows' own
+(`.jpg` → `jpegfile`). The installer now registers `Capabilities` and `RegisteredApplications`, so the app gets
+its own page in Settings → Default apps, and offers to open that page; the user makes the choice. **Re-opened
+by:** a Windows API that lets an installer set a default with the user's consent, which none does today.
 
 ---
 

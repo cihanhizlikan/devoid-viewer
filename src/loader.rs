@@ -501,6 +501,9 @@ mod tests {
     #[test]
     fn installer_associates_exactly_the_supported_extensions() {
         let iss = include_str!("../devoid_viewer_setup.iss");
+        let mut supported = SUPPORTED_EXTENSIONS.to_vec();
+        supported.sort_unstable();
+
         let mut associated: Vec<&str> = iss
             .lines()
             .filter(|l| l.contains("\\OpenWithProgIds"))
@@ -508,9 +511,25 @@ mod tests {
             .collect();
         associated.sort_unstable();
         associated.dedup();
-        let mut supported = SUPPORTED_EXTENSIONS.to_vec();
-        supported.sort_unstable();
-        assert_eq!(associated, supported);
+        assert_eq!(associated, supported, "Open With entries");
+
+        // So does the Default apps registration.
+        let mut registered: Vec<&str> = iss
+            .lines()
+            .filter(|l| l.contains("\\Capabilities\\FileAssociations"))
+            .filter_map(|l| l.split("ValueName: \".").nth(1)?.split('"').next())
+            .collect();
+        registered.sort_unstable();
+        assert_eq!(registered, supported, "Default apps registration");
+
+        // The uninstaller's UserChoice cleanup covers the same list.
+        let mut cleaned: Vec<&str> = iss
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("ForgetOurChoice('"))
+            .filter_map(|rest| rest.split('\'').next())
+            .collect();
+        cleaned.sort_unstable();
+        assert_eq!(cleaned, supported, "UserChoice cleanup");
     }
 
     // ── Magic bytes ───────────────────────────────────────────────────────────
