@@ -260,7 +260,8 @@ fn read_magic(path: &Path) -> Result<Option<image::ImageFormat>, BoxError> {
 /// `ByContent` decodes purely from the file header, ignoring the extension
 /// entirely — used when the extension was already confirmed to be wrong.
 fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, BoxError> {
-    let img = match strategy {
+    let mut reader = image::ImageReader::open(path)?;
+    match strategy {
         DecodeStrategy::ByExtension => {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             let declared = image::ImageFormat::from_extension(ext)
@@ -270,19 +271,65 @@ fn decode_raster(path: &Path, strategy: DecodeStrategy) -> Result<DecodedImage, 
             if actual != Some(declared) {
                 return Err(format!("magic bytes do not match extension .{ext}").into());
             }
-
-            image::open(path)?
+            reader.set_format(declared);
         }
-        DecodeStrategy::ByContent => {
-            let file = std::fs::File::open(path)?;
-            image::ImageReader::new(std::io::BufReader::new(file))
-                .with_guessed_format()?
-                .decode()?
+        DecodeStrategy::ByContent => reader = reader.with_guessed_format()?,
+    }
+    decode_to_rgba8(reader.into_decoder()?)
+}
+
+/// Decode straight into an RGBA8 buffer, so that only one full-size buffer
+/// ever exists.
+///
+/// `DynamicImage::into_rgba8` would allocate the RGBA copy while the decoded
+/// buffer is still alive: for a 12 MP JPEG (RGB8), 36 MB + 48 MB at once,
+/// 33 MB above where the process settles (`docs/benchmarks.md`). Instead,
+/// 8-bit RGB, grey and grey-alpha are decoded into the front of a buffer
+/// already sized for RGBA and widened in place. Anything else (16-bit or
+/// float samples, which only some PNG and TIFF files use) goes through
+/// `DynamicImage`, where the conversion shrinks the data rather than grows it.
+fn decode_to_rgba8(decoder: impl image::ImageDecoder) -> Result<DecodedImage, BoxError> {
+    use image::ColorType;
+
+    let (w, h) = decoder.dimensions();
+    let channels = match decoder.color_type() {
+        ColorType::Rgba8 => 4,
+        ColorType::Rgb8 => 3,
+        ColorType::La8 => 2,
+        ColorType::L8 => 1,
+        _ => {
+            let rgba = image::DynamicImage::from_decoder(decoder)?.into_rgba8();
+            return Ok(DecodedImage::single(rgba.into_raw(), w, h));
         }
     };
-    let rgba = img.into_rgba8();
-    let (w, h) = rgba.dimensions();
-    Ok(DecodedImage::single(rgba.into_raw(), w, h))
+    let len = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|n| n.checked_mul(4))
+        .ok_or("image dimensions overflow")?;
+    let mut pixels = vec![0u8; len];
+    decoder.read_image(&mut pixels[..len / 4 * channels])?;
+    widen_to_rgba(&mut pixels, channels);
+    Ok(DecodedImage::single(pixels, w, h))
+}
+
+/// Expand pixels of `channels` bytes (1 = grey, 2 = grey + alpha, 3 = RGB),
+/// packed at the front of `buf`, to RGBA filling all of it.
+///
+/// Works back to front: pixel `i` is read from `i·channels` and written to
+/// `i·4`, never before its own source, and never over a pixel not yet read.
+fn widen_to_rgba(buf: &mut [u8], channels: usize) {
+    if channels == 4 {
+        return;
+    }
+    for i in (0..buf.len() / 4).rev() {
+        let s = i * channels;
+        let rgba = match channels {
+            3 => [buf[s], buf[s + 1], buf[s + 2], 255],
+            2 => [buf[s], buf[s], buf[s], buf[s + 1]],
+            _ => [buf[s], buf[s], buf[s], 255],
+        };
+        buf[i * 4..i * 4 + 4].copy_from_slice(&rgba);
+    }
 }
 
 fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
@@ -533,6 +580,68 @@ mod tests {
         let path = write(&dir, "a.png", &encode(ImageFormat::Png));
         let img = expect_ok(load_image(&path));
         assert_eq!(img.frames[0].pixels, [255, 0, 0, 255, 0, 0, 255, 128]);
+    }
+
+    #[test]
+    fn widening_in_place_expands_every_pixel() {
+        let mut rgb = [1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        widen_to_rgba(&mut rgb[..8], 3);
+        assert_eq!(rgb[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+
+        let mut grey = [7, 9, 0, 0, 0, 0, 0, 0];
+        widen_to_rgba(&mut grey, 1);
+        assert_eq!(grey, [7, 7, 7, 255, 9, 9, 9, 255]);
+
+        let mut grey_alpha = [7, 100, 9, 200, 0, 0, 0, 0];
+        widen_to_rgba(&mut grey_alpha, 2);
+        assert_eq!(grey_alpha, [7, 7, 7, 100, 9, 9, 9, 200]);
+    }
+
+    /// Every colour type a decoder can report lands as the same straight RGBA,
+    /// whether it is widened in place or converted through `DynamicImage`.
+    #[test]
+    fn every_png_colour_type_decodes_to_the_same_rgba() {
+        use image::{GrayAlphaImage, GrayImage, ImageBuffer, Luma, LumaA};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&str, DynamicImage, [u8; 8]); 4] = [
+            (
+                "rgb8",
+                DynamicImage::ImageRgb8(RgbImage::from_fn(2, 1, |x, _| {
+                    Rgb([10, 20, 30 + x as u8])
+                })),
+                [10, 20, 30, 255, 10, 20, 31, 255],
+            ),
+            (
+                "l8",
+                DynamicImage::ImageLuma8(GrayImage::from_fn(2, 1, |x, _| Luma([40 + x as u8]))),
+                [40, 40, 40, 255, 41, 41, 41, 255],
+            ),
+            (
+                "la8",
+                DynamicImage::ImageLumaA8(GrayAlphaImage::from_fn(2, 1, |x, _| {
+                    LumaA([50, 60 + x as u8])
+                })),
+                [50, 50, 50, 60, 50, 50, 50, 61],
+            ),
+            (
+                "rgb16",
+                DynamicImage::ImageRgb16(ImageBuffer::from_pixel(2, 1, Rgb([0xFFFF, 0, 0x8080]))),
+                [255, 0, 128, 255, 255, 0, 128, 255],
+            ),
+        ];
+        for (name, image, expected) in cases {
+            let mut bytes = Vec::new();
+            image
+                .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+                .unwrap();
+            let path = write(&dir, &format!("{name}.png"), &bytes);
+            assert_eq!(
+                expect_ok(load_image(&path)).frames[0].pixels,
+                expected,
+                "{name}"
+            );
+        }
     }
 
     #[test]

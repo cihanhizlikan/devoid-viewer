@@ -63,6 +63,10 @@ caller then sniffs the content and returns `WrongExtension`, and the image shows
 after the drain. The explicit check exists because `image::open` and `with_guessed_format` both sniff the header
 and succeed silently on a misnamed file.
 
+Raster decodes go into a buffer already sized for RGBA, so one full-size buffer exists at a time: 8-bit RGB, grey
+and grey-alpha are decoded into its front and widened in place (`decode_to_rgba8`). Converting afterwards with
+`into_rgba8` held both copies at once and peaked 33 MB higher on a 12 MP JPEG (see benchmarks.md).
+
 | Format | Magic bytes |
 |---|---|
 | JPEG | `FF D8` |

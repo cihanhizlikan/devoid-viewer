@@ -48,8 +48,7 @@ Binary size: `DevoidViewer.exe` is 4,607,488 bytes.
 Binary size: 3,595,776 bytes (−1,013,248, −22%). Startup and memory are unchanged within run-to-run noise.
 
 The 12 MP JPEG peaks 33 MB above where it settles. A decoded RGB8 copy (36 MB) held alongside its RGBA8
-conversion (48 MB) would explain that, but this is a candidate, not a measurement; confirm it before changing
-the decode path.
+conversion (48 MB) would explain that — confirmed and fixed below (*JPEG decode peak*).
 
 ### `H` help overlay — 2026-11-01
 
@@ -79,3 +78,27 @@ Binary size: 3,607,040 bytes, +7,680 over `d5b8fdd` and 1,536 smaller than the b
 Dimming the whole window instead of a panel (same day) leaves startup untouched, since nothing runs until H. A
 redraw with the overlay shown costs 3.0 ms on a 3840×2160 buffer at 150 % DPI (release, mean of 20 frames,
 masks already rendered). Binary: 3,606,528 bytes.
+
+### JPEG decode peak — 2026-11-01
+
+`decode_raster` used `image::open(..).into_rgba8()`. The JPEG decoder (zune-jpeg) writes straight into the
+buffer it is given, so the only second buffer was the RGBA copy that `into_rgba8` allocates while the RGB8
+image is still alive: 36,000,000 bytes (34.3 MiB) on top of 48 MB, against the 33 MB measured. The decoder now
+writes 8-bit RGB, grey and grey-alpha into the front of a buffer already sized for RGBA, and the pixels are
+widened in place, back to front. 16-bit and float images still go through `DynamicImage`.
+
+Same session, interleaved new → old → new, 15 runs per case, machine otherwise idle (an earlier attempt during
+another project's `cargo` build read 210 ms for the empty window and was discarded). "Old" is the `d5b8fdd` exe,
+whose decode path is the one replaced.
+
+| Case | Visible ms (median) old → new | Peak WS MB old → new | Working set MB | Private MB |
+|---|---:|---:|---:|---:|
+| No image (empty window) | 44.9 → 46.1 / 43.7 | 17.9 → 17.9 | 17.9 → 17.9 | 5.5 → 5.5 |
+| PNG 1920×1080 | 79.7 → 78.3 / 78.6 | 31.3 → 31.3 | 31.3 → 31.3 | 18.5 → 18.6 |
+| JPEG 4000×3000 (12 MP) | 137.7 → 127.4 / 128.8 | **100.2 → 67.3** | 67.3 → 67.3 | 54.7 → 54.7 |
+
+The peak now equals the settled working set: −32.9 MB. The JPEG also opens 7% sooner, since one 48 MB
+allocation and copy is gone; an in-process A/B of the decode alone, alternating old and new, agreed in
+all three runs although they ran during that other build (medians of 7: 89.7 → 83.8, 262.7 → 244.4, 255.0 →
+239.8 ms). The PNG fixture was already RGBA, so it is unchanged. Binary: 3,608,064 bytes,
++1,536 over the previous commit.
