@@ -1,17 +1,20 @@
 //! The key-bindings overlay that `H` toggles.
 //!
-//! Drawn straight into the softbuffer frame after the image, like everything
-//! else: a dimmed panel with text in an embedded 8×8 bitmap font, scaled by a
-//! whole number so it stays crisp. No font file, no text-rendering crate.
+//! Drawn into the softbuffer frame after the image: a dimmed panel with text
+//! in Segoe UI, rendered by Windows (`win32::render_text`) and blended in.
+//! Nothing is rendered until the overlay is first shown, and it is rendered
+//! again only when the size it needs changes.
+
+use crate::win32::{render_text, TextMask};
 
 /// What each key does, in the order the overlay lists them. The README's key
 /// table is the same list, and a test fails when a row is missing there.
 pub const BINDINGS: &[(&str, &str)] = &[
-    ("Right  Down  PgDn", "Next image"),
-    ("Left   Up    PgUp", "Previous image"),
+    ("Right · Down · PgDn", "Next image"),
+    ("Left · Up · PgUp", "Previous image"),
     ("Mouse wheel", "Next / previous image"),
     ("Delete", "Move to the Recycle Bin"),
-    ("F  or  F11", "Fullscreen on / off"),
+    ("F or F11", "Fullscreen on / off"),
     ("Esc", "Close help, leave fullscreen"),
     ("Double-click", "Maximise / restore"),
     ("Drop a file", "Open it"),
@@ -19,228 +22,218 @@ pub const BINDINGS: &[(&str, &str)] = &[
     ("Q", "Quit"),
 ];
 
-/// Glyph cell size in font pixels.
-const CELL: u32 = 8;
-/// Line height in font pixels: the glyph plus half a cell of leading.
-const LINE: u32 = 12;
-/// Panel padding, in cells.
-const PAD: u32 = 2;
-/// Cells between the key column and the action column.
-const GAP: u32 = 3;
-const TEXT: u32 = 0x00E6_E6E6;
+const TITLE: &str = "Keyboard shortcuts";
+/// Em size of the body text at 100 % DPI, in pixels.
+const BASE_PX: f64 = 15.0;
+/// Smallest em the overlay shrinks to in a small window; below this it clips.
+const MIN_PX: u32 = 9;
+const KEY_COLOUR: u32 = 0x00FF_FFFF;
+const ACTION_COLOUR: u32 = 0x00C0_C0C0;
 
-/// Overlay the key table on `buf`, centred, at the largest whole-number scale
-/// that fits the window, starting from two font pixels per screen pixel at
-/// 100 % DPI. Everything is clipped to the buffer, so a tiny window cannot
-/// panic; it just shows less.
-pub fn draw(buf: &mut [u32], win_w: u32, win_h: u32, dpi_scale: f64) {
-    let key_cols = BINDINGS.iter().map(|(k, _)| k.len()).max().unwrap_or(0) as u32;
-    let act_cols = BINDINGS.iter().map(|(_, a)| a.len()).max().unwrap_or(0) as u32;
-    let panel_w = (2 * PAD + key_cols + GAP + act_cols) * CELL;
-    let panel_h = 2 * PAD * CELL + BINDINGS.len() as u32 * LINE - (LINE - CELL);
+/// The overlay's text, rendered at one em size and laid out.
+struct Rendered {
+    px: u32,
+    title: TextMask,
+    rows: Vec<(TextMask, TextMask)>,
+    key_w: u32,
+    width: u32,
+    height: u32,
+}
 
-    let mut scale = ((dpi_scale * 2.0).round() as u32).max(1);
-    while scale > 1 && (panel_w * scale > win_w || panel_h * scale > win_h) {
-        scale -= 1;
-    }
+#[derive(Default)]
+pub struct Help {
+    rendered: Option<Rendered>,
+}
 
-    let w = panel_w * scale;
-    let h = panel_h * scale;
-    let x0 = win_w.saturating_sub(w) / 2;
-    let y0 = win_h.saturating_sub(h) / 2;
-
-    // Quarter brightness keeps the image recognisable behind the text.
-    for y in y0..(y0 + h).min(win_h) {
-        let row = (y * win_w) as usize;
-        for px in &mut buf[row + x0 as usize..row + (x0 + w).min(win_w) as usize] {
-            *px = (*px >> 2) & 0x003F_3F3F;
+impl Help {
+    /// Overlay the key table on `buf`, centred, as large as `dpi_scale` asks
+    /// for and smaller if the window cannot fit it. Drawing is clipped to the
+    /// buffer, so a window too small even at `MIN_PX` shows less.
+    pub fn draw(&mut self, buf: &mut [u32], win_w: u32, win_h: u32, dpi_scale: f64) {
+        let base = ((BASE_PX * dpi_scale).round() as u32).max(MIN_PX);
+        // One render to measure, one at the estimated fit, and since hinting
+        // keeps text from shrinking exactly with the em, a few one-pixel
+        // steps down if the estimate still overflows.
+        for _ in 0..5 {
+            let px = match &self.rendered {
+                Some(r) if r.is_right_for(base, win_w, win_h) => break,
+                Some(r) if !r.fits(win_w, win_h) => r.fitting_px(base, win_w, win_h).min(r.px - 1),
+                Some(r) => r.fitting_px(base, win_w, win_h),
+                None => base,
+            };
+            self.rendered = Rendered::new(px);
+        }
+        if let Some(r) = &self.rendered {
+            r.draw(buf, win_w, win_h);
         }
     }
+}
 
-    let text = |buf: &mut [u32], s: &str, col: u32, line: u32| {
-        let ty = y0 + (PAD * CELL + line * LINE) * scale;
-        for (i, ch) in s.bytes().enumerate() {
-            let tx = x0 + (PAD + col + i as u32) * CELL * scale;
-            blit_glyph(buf, win_w, win_h, glyph(ch), tx, ty, scale);
+/// Padding, column gap, space under the title and line pitch, in proportion
+/// to the em so the panel looks the same at every size.
+struct Spacing {
+    pad: u32,
+    gap: u32,
+    title_gap: u32,
+    line: u32,
+}
+
+impl Spacing {
+    fn new(px: u32, row_h: u32) -> Self {
+        Spacing {
+            pad: px * 3 / 2,
+            gap: px * 5 / 2,
+            title_gap: px,
+            line: row_h + px / 3,
         }
+    }
+}
+
+impl Rendered {
+    fn new(px: u32) -> Option<Self> {
+        let title = render_text(TITLE, px * 4 / 3, true)?;
+        let rows = BINDINGS
+            .iter()
+            .map(|(keys, action)| {
+                Some((
+                    render_text(keys, px, true)?,
+                    render_text(action, px, false)?,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let key_w = rows.iter().map(|(k, _)| k.width).max()?;
+        let action_w = rows.iter().map(|(_, a)| a.width).max()?;
+        let row_h = rows[0].0.height;
+        let s = Spacing::new(px, row_h);
+        Some(Rendered {
+            px,
+            width: 2 * s.pad + title.width.max(key_w + s.gap + action_w),
+            height: 2 * s.pad
+                + title.height
+                + s.title_gap
+                + (rows.len() as u32 - 1) * s.line
+                + row_h,
+            key_w,
+            title,
+            rows,
+        })
+    }
+
+    fn fits(&self, win_w: u32, win_h: u32) -> bool {
+        self.width <= win_w && self.height <= win_h
+    }
+
+    /// The em at which the panel would just fit the window, estimated from
+    /// this rendering: text extents scale with the em, near enough.
+    fn fitting_px(&self, base: u32, win_w: u32, win_h: u32) -> u32 {
+        let scale = (win_w as f64 / self.width as f64).min(win_h as f64 / self.height as f64);
+        ((self.px as f64 * scale).floor() as u32).clamp(MIN_PX, base)
+    }
+
+    /// Keep this rendering if it fits (or cannot shrink further) and a new
+    /// one would not be meaningfully larger. The one-pixel slack stops
+    /// extents that do not scale exactly from re-rendering every frame.
+    fn is_right_for(&self, base: u32, win_w: u32, win_h: u32) -> bool {
+        let wanted = self.fitting_px(base, win_w, win_h);
+        let fits = self.fits(win_w, win_h) || self.px == MIN_PX;
+        let big_enough = wanted <= self.px + 1 || self.px == base;
+        fits && big_enough && self.px <= base
+    }
+
+    fn draw(&self, buf: &mut [u32], win_w: u32, win_h: u32) {
+        let x0 = win_w.saturating_sub(self.width) / 2;
+        let y0 = win_h.saturating_sub(self.height) / 2;
+
+        // Quarter brightness keeps the image recognisable behind the text.
+        for y in y0..(y0 + self.height).min(win_h) {
+            let row = (y * win_w) as usize;
+            for px in &mut buf[row + x0 as usize..row + (x0 + self.width).min(win_w) as usize] {
+                *px = (*px >> 2) & 0x003F_3F3F;
+            }
+        }
+
+        let s = Spacing::new(self.px, self.rows[0].0.height);
+        let (x, mut y) = (x0 + s.pad, y0 + s.pad);
+        blend_mask(buf, win_w, win_h, &self.title, x, y, KEY_COLOUR);
+        y += self.title.height + s.title_gap;
+        for (keys, action) in &self.rows {
+            blend_mask(buf, win_w, win_h, keys, x, y, KEY_COLOUR);
+            blend_mask(
+                buf,
+                win_w,
+                win_h,
+                action,
+                x + self.key_w + s.gap,
+                y,
+                ACTION_COLOUR,
+            );
+            y += s.line;
+        }
+    }
+}
+
+/// Blend `colour` into `buf` through the mask's coverage, top-left at
+/// (`x`, `y`), clipped to the buffer.
+fn blend_mask(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    mask: &TextMask,
+    x: u32,
+    y: u32,
+    colour: u32,
+) {
+    let rows = mask.coverage.chunks_exact(mask.width as usize);
+    for (dy, coverage) in (y..win_h).zip(rows) {
+        let row = (dy * win_w) as usize;
+        for (dx, &a) in (x..win_w).zip(coverage) {
+            if a != 0 {
+                let px = &mut buf[row + dx as usize];
+                *px = blend(*px, colour, a as u32);
+            }
+        }
+    }
+}
+
+/// `src * a + dst * (255 - a)`, per channel of a `0x00RRGGBB` pixel.
+fn blend(dst: u32, src: u32, a: u32) -> u32 {
+    let channel = |shift: u32| {
+        let (d, s) = ((dst >> shift) & 0xFF, (src >> shift) & 0xFF);
+        ((s * a + d * (255 - a)) / 255) << shift
     };
-    for (line, (keys, action)) in BINDINGS.iter().enumerate() {
-        text(buf, keys, 0, line as u32);
-        text(buf, action, key_cols + GAP, line as u32);
-    }
+    channel(16) | channel(8) | channel(0)
 }
-
-/// The bitmap for a printable ASCII byte; anything else draws as a space.
-fn glyph(ch: u8) -> &'static [u8; 8] {
-    GLYPHS
-        .get(ch.wrapping_sub(b' ') as usize)
-        .unwrap_or(&GLYPHS[0])
-}
-
-/// Draw one glyph with its top-left at (`x`, `y`), each font pixel a
-/// `scale`×`scale` square, clipped to the buffer.
-fn blit_glyph(buf: &mut [u32], win_w: u32, win_h: u32, g: &[u8; 8], x: u32, y: u32, scale: u32) {
-    for (gy, bits) in g.iter().enumerate() {
-        for gx in 0..CELL {
-            // Bit 0 is the leftmost pixel.
-            if bits >> gx & 1 == 0 {
-                continue;
-            }
-            let px = x + gx * scale;
-            let py = y + gy as u32 * scale;
-            for sy in py..(py + scale).min(win_h) {
-                let row = (sy * win_w) as usize;
-                for sx in px..(px + scale).min(win_w) {
-                    buf[row + sx as usize] = TEXT;
-                }
-            }
-        }
-    }
-}
-
-/// Printable ASCII, `' '` (0x20) to `'~'` (0x7E): 8 rows each, bit 0 the
-/// leftmost pixel. From Daniel Hepper's public-domain font8x8
-/// (<https://github.com/dhepper/font8x8>), itself derived from the
-/// public-domain IBM VGA fonts.
-#[rustfmt::skip]
-const GLYPHS: [[u8; 8]; 95] = [
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // space
-    [0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00], // !
-    [0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // "
-    [0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00], // #
-    [0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00], // $
-    [0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00], // %
-    [0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00], // &
-    [0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00], // '
-    [0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00], // (
-    [0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00], // )
-    [0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00], // *
-    [0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00], // +
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06], // ,
-    [0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00], // -
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00], // .
-    [0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00], // /
-    [0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00], // 0
-    [0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00], // 1
-    [0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00], // 2
-    [0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00], // 3
-    [0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00], // 4
-    [0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00], // 5
-    [0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00], // 6
-    [0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00], // 7
-    [0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00], // 8
-    [0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00], // 9
-    [0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00], // :
-    [0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06], // ;
-    [0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00], // <
-    [0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00], // =
-    [0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00], // >
-    [0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00], // ?
-    [0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00], // @
-    [0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00], // A
-    [0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00], // B
-    [0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00], // C
-    [0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00], // D
-    [0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00], // E
-    [0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00], // F
-    [0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00], // G
-    [0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00], // H
-    [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // I
-    [0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00], // J
-    [0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00], // K
-    [0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00], // L
-    [0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00], // M
-    [0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00], // N
-    [0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00], // O
-    [0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00], // P
-    [0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00], // Q
-    [0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00], // R
-    [0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00], // S
-    [0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // T
-    [0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00], // U
-    [0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00], // V
-    [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00], // W
-    [0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00], // X
-    [0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00], // Y
-    [0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00], // Z
-    [0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00], // [
-    [0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00], // backslash
-    [0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00], // ]
-    [0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00], // ^
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF], // _
-    [0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00], // `
-    [0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00], // a
-    [0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00], // b
-    [0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00], // c
-    [0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00], // d
-    [0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00], // e
-    [0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00], // f
-    [0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F], // g
-    [0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00], // h
-    [0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // i
-    [0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E], // j
-    [0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00], // k
-    [0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // l
-    [0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00], // m
-    [0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00], // n
-    [0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00], // o
-    [0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F], // p
-    [0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78], // q
-    [0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00], // r
-    [0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00], // s
-    [0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00], // t
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00], // u
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00], // v
-    [0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00], // w
-    [0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00], // x
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F], // y
-    [0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00], // z
-    [0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00], // {
-    [0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00], // |
-    [0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00], // }
-    [0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // ~
-];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn every_binding_uses_only_glyphs_the_font_has() {
-        for (keys, action) in BINDINGS {
-            for ch in keys.bytes().chain(action.bytes()) {
-                assert!((b' '..=b'~').contains(&ch), "{keys} / {action}: {ch:#x}");
-            }
-        }
-    }
-
-    #[test]
     fn the_readme_key_table_lists_every_binding() {
         let readme = include_str!("../README.md");
-        for (_, action) in BINDINGS {
+        for (keys, action) in BINDINGS {
             assert!(
-                readme.contains(&format!("| {action} |")),
-                "README.md has no row for {action:?}"
+                readme.contains(&format!("| {keys} | {action} |")),
+                "README.md has no row for {keys:?} / {action:?}"
             );
         }
     }
 
     #[test]
-    fn the_table_starts_at_space_and_holds_a_letter_where_expected() {
-        assert_eq!(glyph(b' '), &[0; 8]);
-        assert_eq!(
-            glyph(b'A'),
-            &[0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00]
-        );
-        assert_eq!(glyph(0x7F), &[0; 8], "out of range draws as a space");
+    fn blend_mixes_each_channel_by_coverage() {
+        assert_eq!(blend(0x0000_0000, 0x00FF_FFFF, 255), 0x00FF_FFFF);
+        assert_eq!(blend(0x0012_3456, 0x00FF_FFFF, 0), 0x0012_3456);
+        assert_eq!(blend(0x0000_0000, 0x00FF_0000, 51), 0x0033_0000);
     }
 
     #[test]
-    fn draw_dims_and_writes_text_in_a_window_that_fits_it() {
-        let (w, h) = (800, 400);
+    fn the_panel_is_drawn_full_size_where_it_fits() {
+        let (w, h) = (1600, 1000);
         let mut buf = vec![0x00FF_FFFF; (w * h) as usize];
-        draw(&mut buf, w, h, 1.0);
-        assert!(buf.contains(&TEXT));
+        let mut help = Help::default();
+        help.draw(&mut buf, w, h, 1.0);
+        assert_eq!(help.rendered.as_ref().expect("rendered").px, 15);
+        assert!(buf.contains(&KEY_COLOUR), "text");
         assert!(
             buf.contains(&0x003F_3F3F),
             "the panel dims what is under it"
@@ -249,10 +242,25 @@ mod tests {
     }
 
     #[test]
-    fn draw_clips_in_a_window_too_small_for_it() {
+    fn a_small_window_gets_a_smaller_panel_that_fits() {
+        let full = Rendered::new(15).expect("rendered");
+        let (w, h) = (full.width * 3 / 4, full.height * 3 / 4);
+        let mut help = Help::default();
+        help.draw(&mut vec![0; (w * h) as usize], w, h, 1.0);
+        let r = help.rendered.as_ref().expect("rendered");
+        assert!(r.px < 15 && r.fits(w, h), "px {} for {w}×{h}", r.px);
+
+        // Drawing again at the same size keeps the rendering.
+        let px = r.px;
+        help.draw(&mut vec![0; (w * h) as usize], w, h, 1.0);
+        assert_eq!(help.rendered.as_ref().unwrap().px, px);
+    }
+
+    #[test]
+    fn a_tiny_window_clips_instead_of_panicking() {
+        let mut help = Help::default();
         for (w, h) in [(1, 1), (7, 3), (120, 40)] {
-            let mut buf = vec![0; (w * h) as usize];
-            draw(&mut buf, w, h, 3.0);
+            help.draw(&mut vec![0; (w * h) as usize], w, h, 3.0);
         }
     }
 }

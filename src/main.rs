@@ -17,6 +17,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
 mod help;
 mod loader;
 mod nav;
@@ -188,6 +189,9 @@ struct App {
     last_click: Option<Instant>,
     /// True while the key-bindings overlay (`H`) is drawn over the image.
     show_help: bool,
+    /// The overlay's rendered text, kept between frames.
+    #[cfg(windows)]
+    help: help::Help,
 
     // ── Directory watching ────────────────────────────────────────────────────
     /// Active filesystem watcher for the current directory.
@@ -220,6 +224,8 @@ impl App {
             fullscreen: false,
             last_click: None,
             show_help: false,
+            #[cfg(windows)]
+            help: help::Help::default(),
             dir_watcher: None,
             watched_dir: None,
         }
@@ -1244,7 +1250,8 @@ fn main() {
                         };
                         render(&mut buf, win_w, win_h, app.view());
                         if app.show_help {
-                            help::draw(&mut buf, win_w, win_h, window.scale_factor());
+                            #[cfg(windows)]
+                            app.help.draw(&mut buf, win_w, win_h, window.scale_factor());
                         }
                         // Nothing to recover: the next RedrawRequested repaints.
                         let _ = buf.present();

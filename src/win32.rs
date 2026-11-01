@@ -12,7 +12,14 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 
-use windows_sys::Win32::Foundation::RECT;
+use windows_sys::Win32::Foundation::{RECT, SIZE};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, DeleteDC, DeleteObject, GetDC,
+    GetDIBits, GetTextExtentPoint32W, ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+    TextOutW, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, DEFAULT_PITCH, DIB_RGB_COLORS, FW_NORMAL, FW_SEMIBOLD, OPAQUE,
+    OUT_DEFAULT_PRECIS,
+};
 use windows_sys::Win32::UI::Shell::StrCmpLogicalW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, PostMessageW, SystemParametersInfoW, IDYES, MB_ICONERROR, MB_ICONQUESTION,
@@ -126,6 +133,173 @@ pub fn install_system_command_hook<T: 'static>(builder: &mut EventLoopBuilder<T>
     });
 }
 
+/// Runs its closure when dropped: releases a GDI handle on every exit path.
+/// Guards drop in reverse order, so a deselect declared after its object's
+/// delete runs first, as GDI requires.
+struct Release<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for Release<F> {
+    fn drop(&mut self) {
+        (self.0)()
+    }
+}
+
+/// Text rendered by [`render_text`]: `coverage` holds one byte per pixel,
+/// row by row, 0 for background and 255 for solid ink.
+pub struct TextMask {
+    pub width: u32,
+    pub height: u32,
+    pub coverage: Vec<u8>,
+}
+
+/// Render one line of `text` in Segoe UI with a `px`-pixel em, greyscale
+/// antialiased, the way Windows draws its own interface text. `None` if any
+/// GDI call fails or the text is empty.
+pub fn render_text(text: &str, px: u32, semibold: bool) -> Option<TextMask> {
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let len = i32::try_from(utf16.len()).ok().filter(|&n| n > 0)?;
+    let face = to_wide("Segoe UI");
+
+    // SAFETY: a null window asks for a DC of the whole screen.
+    let screen = unsafe { GetDC(null_mut()) };
+    if screen.is_null() {
+        return None;
+    }
+    // SAFETY: `screen` came from `GetDC(null)` and is released once.
+    let _screen = Release(move || unsafe {
+        ReleaseDC(null_mut(), screen);
+    });
+    // SAFETY: `screen` is a valid DC.
+    let dc = unsafe { CreateCompatibleDC(screen) };
+    if dc.is_null() {
+        return None;
+    }
+    // SAFETY: `dc` was created above and is deleted once.
+    let _dc = Release(move || unsafe {
+        DeleteDC(dc);
+    });
+
+    let weight = if semibold { FW_SEMIBOLD } else { FW_NORMAL };
+    // SAFETY: `face` is null-terminated and outlives the call; the rest are
+    // plain values. A negative height asks for that em size in pixels.
+    let font = unsafe {
+        CreateFontW(
+            -(px as i32),
+            0,
+            0,
+            0,
+            weight as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            ANTIALIASED_QUALITY as u32,
+            DEFAULT_PITCH as u32,
+            face.as_ptr(),
+        )
+    };
+    if font.is_null() {
+        return None;
+    }
+    // SAFETY: `font` was created above and is deleted once.
+    let _font = Release(move || unsafe {
+        DeleteObject(font);
+    });
+    // SAFETY: both handles are valid; the guard restores the old font
+    // before `_font` deletes ours.
+    let old_font = unsafe { SelectObject(dc, font) };
+    let _old_font = Release(move || unsafe {
+        SelectObject(dc, old_font);
+    });
+
+    let mut size = SIZE::default();
+    // SAFETY: `utf16` holds `len` units and outlives the call; `size` is a
+    // valid out-parameter.
+    if unsafe { GetTextExtentPoint32W(dc, utf16.as_ptr(), len, &mut size) } == 0
+        || size.cx <= 0
+        || size.cy <= 0
+    {
+        return None;
+    }
+    let (width, height) = (size.cx as u32, size.cy as u32);
+
+    // A bitmap compatible with the screen, not the memory DC, which would be
+    // monochrome and lose the antialiasing.
+    // SAFETY: `screen` is valid; the size is positive.
+    let bitmap = unsafe { CreateCompatibleBitmap(screen, size.cx, size.cy) };
+    if bitmap.is_null() {
+        return None;
+    }
+    // SAFETY: `bitmap` was created above and is deleted once.
+    let _bitmap = Release(move || unsafe {
+        DeleteObject(bitmap);
+    });
+    {
+        // SAFETY: both handles are valid; the guard deselects the bitmap at
+        // the end of this block, before `GetDIBits`, which requires it.
+        let old_bitmap = unsafe { SelectObject(dc, bitmap) };
+        let _old_bitmap = Release(move || unsafe {
+            SelectObject(dc, old_bitmap);
+        });
+        // SAFETY: plain state setters on a valid DC.
+        unsafe {
+            SetTextColor(dc, 0x00FF_FFFF);
+        }
+        // SAFETY: as above.
+        unsafe {
+            SetBkColor(dc, 0);
+        }
+        // SAFETY: as above.
+        unsafe {
+            SetBkMode(dc, OPAQUE as i32);
+        }
+        // SAFETY: `utf16` holds `len` units and outlives the call. In opaque
+        // mode the text cell, which is the whole bitmap, is filled black.
+        if unsafe { TextOutW(dc, 0, 0, utf16.as_ptr(), len) } == 0 {
+            return None;
+        }
+    }
+
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: size.cx,
+            biHeight: -size.cy, // negative: rows top-down
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut pixels = vec![0u32; width as usize * height as usize];
+    // SAFETY: `pixels` holds exactly `height` rows of `width` 32-bit pixels,
+    // the format `info` asks for; the bitmap is not selected into any DC.
+    let rows = unsafe {
+        GetDIBits(
+            dc,
+            bitmap,
+            0,
+            height,
+            pixels.as_mut_ptr().cast(),
+            &mut info,
+            DIB_RGB_COLORS,
+        )
+    };
+    if rows != size.cy {
+        return None;
+    }
+
+    // White text on black in greyscale: every channel is the coverage.
+    Some(TextMask {
+        width,
+        height,
+        coverage: pixels.iter().map(|p| (p >> 8) as u8).collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +318,24 @@ mod tests {
     fn compare_logical_orders_numbers_by_value() {
         assert_eq!(compare_logical(&wide("2"), &wide("10")), Ordering::Less);
         assert_eq!(compare_logical(&wide("a"), &wide("A")), Ordering::Equal);
+    }
+
+    #[test]
+    fn render_text_draws_antialiased_ink_inside_its_extent() {
+        let mask = render_text("Help", 20, false).expect("GDI renders text");
+        assert!(
+            mask.width > 20 && mask.height >= 20,
+            "{}×{}",
+            mask.width,
+            mask.height
+        );
+        assert_eq!(mask.coverage.len(), (mask.width * mask.height) as usize);
+        assert!(mask.coverage.contains(&255), "solid ink");
+        assert!(
+            mask.coverage.iter().any(|&c| c > 0 && c < 255),
+            "antialiased edges"
+        );
+        assert!(render_text("", 20, false).is_none());
     }
 
     #[test]

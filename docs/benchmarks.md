@@ -63,3 +63,15 @@ Before (`d5b8fdd`) and after, same session, 15 runs per case.
 
 Binary size: 3,599,360 → 3,608,576 bytes (+9,216). The overlay adds no startup work (it runs only when shown);
 the time differences are within run-to-run noise, and memory is identical.
+
+That first version used an embedded 8×8 bitmap font; the maintainer found it too pixelated to read. With Segoe
+UI rendered by GDI instead, same session:
+
+| Case | Visible ms (median) | Visible ms (min) | Working set MB | Private MB |
+|---|---:|---:|---:|---:|
+| No image (empty window) | 49.9 | 40.9 | 18.3 | 5.5 |
+| PNG 1920×1080 | 83.5 | 75.9 | 31.6 | 18.6 |
+| JPEG 4000×3000 (12 MP) | 153.2 | 146.3 | 67.6 | 54.7 |
+
+Binary size: 3,607,040 bytes, +7,680 over `d5b8fdd` and 1,536 smaller than the bitmap-font version. Linking
+`gdi32.dll` costs no measurable startup: `user32.dll`, which the viewer already loads, loads it too.

@@ -9,7 +9,8 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   directory watcher, rendering, the Win32 dialogs.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery.
 - `src/win32.rs` — every Win32 call, behind safe functions; the only module where `unsafe` compiles.
-- `src/help.rs` — the `H` key-bindings overlay and its embedded 8×8 font; its table must match the README's.
+- `src/help.rs` — the `H` key-bindings overlay, text in Segoe UI via `win32::render_text`; its table must match the
+  README's.
 - `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
 - `scripts/bench.ps1` — startup time and memory of the release build; baseline and method in
   [docs/benchmarks.md](docs/benchmarks.md). Run it before and after anything that touches startup or decoding.
