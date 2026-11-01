@@ -9,6 +9,8 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   directory watcher, rendering, the Win32 dialogs.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery.
 - `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
+- `scripts/bench.ps1` — startup time and memory of the release build; baseline and method in
+  [docs/benchmarks.md](docs/benchmarks.md). Run it before and after anything that touches startup or decoding.
 - `build.rs` — embeds `devoid.ico` and version resources. `devoid_viewer_setup.iss` — Inno Setup installer.
 
 ## Critical rules
