@@ -623,7 +623,8 @@ impl App {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-/// Largest uniform scale that fits the image inside the window without upscaling.
+/// Largest uniform scale that fits the image inside the window. Small images
+/// are enlarged to fill it too — intended; see docs/settled-decisions.md.
 #[inline]
 fn fit_scale(img_w: u32, img_h: u32, win_w: u32, win_h: u32) -> f32 {
     (win_h as f32 / img_h as f32).min(win_w as f32 / img_w as f32)
@@ -1242,6 +1243,11 @@ mod tests {
         assert_eq!(fit_scale(200, 100, 100, 100), 0.5);
         assert_eq!(fit_scale(100, 400, 100, 100), 0.25);
         assert_eq!(fit_scale(100, 100, 100, 100), 1.0);
+    }
+
+    #[test]
+    fn fit_scale_enlarges_a_small_image_to_fill_the_window() {
+        assert_eq!(fit_scale(50, 25, 200, 200), 4.0);
     }
 
     // ── Rendering ─────────────────────────────────────────────────────────────

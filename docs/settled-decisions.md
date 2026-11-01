@@ -59,6 +59,11 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## Small images are enlarged to fill the window (2026-11-01)
+`fit_scale` has no `.min(1.0)`: an image smaller than the window is scaled up (nearest-neighbour) like a larger
+one is scaled down. Its doc comment used to say *"without upscaling"*; the maintainer chose the behaviour, so the
+comment was corrected and `fit_scale_enlarges_a_small_image_to_fill_the_window` pins it.
+
 ## Release builds abort on panic (2026-11-01)
 `panic = "abort"` in `[profile.release]`. This is the Event Log coverage the logging decision asks for, with no
 code: a probe panic in a background thread ended the process with `0xC0000409`, and Windows logged Application
@@ -97,6 +102,3 @@ Raised by the 2026-10-31 baseline setup. Each needs the maintainer's call; none 
 - **The codebase guide PDF.** `DevoidViewer_Codebase_Guide.pdf` cannot be grepped or diffed and has needed
   repeated "updated the pdf" commits. *Recommendation:* move anything it says that the code and these docs do not
   into Markdown here, then delete it.
-- **`fit_scale` upscales.** Its doc says *"without upscaling"*, but the formula has no `.min(1.0)`, so a small image
-  in a maximised window is enlarged (nearest-neighbour). Decide which is intended; the tests deliberately pin
-  neither.
