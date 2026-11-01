@@ -59,6 +59,13 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## Documentation is Markdown in `docs/` (2026-11-01)
+`DevoidViewer_Codebase_Guide.pdf` could not be grepped or diffed, needed repeated "updated the pdf" commits, and
+had drifted (it still described the pre-Explorer sort and a 2–3 MB binary). What it said that the code did not —
+the threading and window-reveal design, directory-watching rationale, known limitations, and the installer's
+reasoning — moved to `docs/architecture.md` and `docs/installer.md`, checked against the code, and the PDF was
+deleted. Its Rust glossary was tutorial material and was dropped.
+
 ## Small images are enlarged to fill the window (2026-11-01)
 `fit_scale` has no `.min(1.0)`: an image smaller than the window is scaled up (nearest-neighbour) like a larger
 one is scaled down. Its doc comment used to say *"without upscaling"*; the maintainer chose the behaviour, so the
@@ -97,8 +104,4 @@ jxl-oxide release that makes reconstruction optional.
 
 # Open decisions
 
-Raised by the 2026-10-31 baseline setup. Each needs the maintainer's call; none is settled.
-
-- **The codebase guide PDF.** `DevoidViewer_Codebase_Guide.pdf` cannot be grepped or diffed and has needed
-  repeated "updated the pdf" commits. *Recommendation:* move anything it says that the code and these docs do not
-  into Markdown here, then delete it.
+None. The five raised by the 2026-10-31 baseline setup were all decided on 2026-11-01 and are recorded above.

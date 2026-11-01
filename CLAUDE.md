@@ -25,7 +25,8 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   at `-D warnings`. **Change both together**: a step added to one and not the other means a local green that CI
   reds, or the reverse.
 - **Documentation lives in this repository as Markdown**, where it can be grepped, diffed and changed in the same
-  commit as the code it describes. `DevoidViewer_Codebase_Guide.pdf` is not the reference — see the open decision.
+  commit as the code it describes: [docs/architecture.md](docs/architecture.md) for how the pieces fit,
+  [docs/installer.md](docs/installer.md) for the Inno Setup script.
 
 ## Building
 - **Needs the MSVC linker**: Visual Studio's *Desktop development with C++* workload (or the standalone Build
