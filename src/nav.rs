@@ -197,17 +197,11 @@ fn sort_key(path: &Path) -> SortKey {
 }
 
 /// `StrCmpLogicalW` is the comparison Explorer uses for its default name
-/// sort: numeric runs by value, case-insensitive, locale-aware, with
-/// hyphens and apostrophes ignored. Reimplementing it in safe Rust could
-/// only approximate it, which is the bug this replaces.
+/// sort. Reimplementing it in safe Rust could only approximate it, which is
+/// the bug this replaced.
 #[cfg(windows)]
 fn compare_keys(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
-    use windows_sys::Win32::UI::Shell::StrCmpLogicalW;
-    debug_assert!(a.last() == Some(&0) && b.last() == Some(&0));
-    // SAFETY: both slices are null-terminated (built by `sort_key`) and
-    // outlive the call, which only reads them.
-    let r = unsafe { StrCmpLogicalW(a.as_ptr(), b.as_ptr()) };
-    r.cmp(&0)
+    crate::win32::compare_logical(a, b)
 }
 
 #[cfg(not(windows))]

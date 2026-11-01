@@ -65,6 +65,12 @@ unenforced hand style drifts with every edit, so the maintainer chose the format
 reformatted once (135 diffs) and `cargo fmt --check` now fails CI and `/verify`. No `rustfmt.toml`; defaults only.
 **Re-opened by:** stable rustfmt gaining column alignment.
 
+## `unsafe` lives only in `src/win32.rs` (2026-11-01)
+`[lints.rust] unsafe_code = "deny"` in `Cargo.toml`, with a single `#![allow(unsafe_code)]` in `src/win32.rs`, so
+the safe-Rust rule is enforced by the build. The module's functions take and return no raw pointers; the winit
+message hook is installed from inside it, so the `MSG` pointer never leaves it. Verified by adding an `unsafe {}`
+to `nav.rs`, which failed the build.
+
 ## jxl-oxide stays on 0.10 (2026-11-01)
 RUSTSEC-2026-0151 (jxl-grid 0.5: out-of-bounds writes from a crafted JPEG XL) affects 32-bit targets only, and the
 shipped binary is x86_64. The fix needs jxl-oxide 0.12, which compiled with no source changes and passed every
@@ -90,6 +96,3 @@ Raised by the 2026-10-31 baseline setup. Each needs the maintainer's call; none 
 - **`fit_scale` upscales.** Its doc says *"without upscaling"*, but the formula has no `.min(1.0)`, so a small image
   in a maximised window is enlarged (nearest-neighbour). Decide which is intended; the tests deliberately pin
   neither.
-- **Quarantine `unsafe` in one module.** Six `unsafe` sites, all Win32: three `MessageBoxW`, `SystemParametersInfoW`,
-  the message hook and `StrCmpLogicalW`. Moving them into `src/win32.rs` would let `Cargo.toml` set
-  `unsafe_code = "deny"` crate-wide with a single `#![allow]` there, making the safe-Rust rule build-enforced.

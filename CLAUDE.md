@@ -8,6 +8,7 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 - `src/main.rs` — event loop, window state (maximise/fullscreen/centre), background decode and preload threads,
   directory watcher, rendering, the Win32 dialogs.
 - `src/loader.rs` — decoding to straight RGBA8, magic-byte sniffing, wrong-extension recovery.
+- `src/win32.rs` — every Win32 call, behind safe functions; the only module where `unsafe` compiles.
 - `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
 - `scripts/bench.ps1` — startup time and memory of the release build; baseline and method in
   [docs/benchmarks.md](docs/benchmarks.md). Run it before and after anything that touches startup or decoding.
@@ -39,8 +40,9 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 ## Working style
 - **Safe Rust only, `unsafe` only where Windows forces it.** Maintainer: *"If we're writing unmanaged code why
   are we writing code in Rust in the first place."* Before writing FFI, look for a maintained crate with a safe
-  API. When FFI is genuinely unavoidable (a Win32 call no crate wraps), keep the `unsafe` block to the one call,
-  inside a safe function, with a `// SAFETY:` comment saying why it holds.
+  API. When FFI is genuinely unavoidable (a Win32 call no crate wraps), it goes in `src/win32.rs`: the `unsafe`
+  block holds the one call, inside a safe function that takes and returns no raw pointers, with a `// SAFETY:`
+  comment saying why it holds. `unsafe_code = "deny"` makes `unsafe` anywhere else a build error.
 
 Carried over from the maintainer's other projects:
 - **Evidence, not reasoning.** A fix is finished when it is measured, not when the code looks right. A hypothesis

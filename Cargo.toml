@@ -53,6 +53,11 @@ tempfile = "3"
 [lints.clippy]
 disallowed_methods = "deny"
 
+# Safe Rust only: src/win32.rs is the one module allowed `unsafe`, so a new
+# FFI call has to go there, behind a safe function. See CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
 [build-dependencies]
 winres = "0.1"
 

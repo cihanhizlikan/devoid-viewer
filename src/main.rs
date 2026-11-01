@@ -19,6 +19,8 @@
 
 mod loader;
 mod nav;
+#[cfg(windows)]
+mod win32;
 
 use std::{
     collections::HashMap,
@@ -33,8 +35,6 @@ use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 use softbuffer::Surface;
-#[cfg(windows)]
-use winit::platform::windows::EventLoopBuilderExtWindows;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{
@@ -714,26 +714,14 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 
 // ── Native dialogs (Windows) ──────────────────────────────────────────────────
 
-/// Encode a `&str` as a null-terminated UTF-16 `Vec` for Win32 API calls.
-#[cfg(windows)]
-fn to_wide(s: &str) -> Vec<u16> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
 fn confirm_delete_dialog(filename: &str) -> bool {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
-        };
-        let text = to_wide(&format!("Move to the Recycle Bin?\n\n{filename}"));
-        let cap = to_wide("Delete Image");
-        unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES }
+        win32::ask_yes_no(
+            &format!("Move to the Recycle Bin?\n\n{filename}"),
+            "Delete Image",
+            win32::Ask::Warning,
+        )
     }
     #[cfg(not(windows))]
     {
@@ -744,14 +732,7 @@ fn confirm_delete_dialog(filename: &str) -> bool {
 
 fn show_error_dialog(msg: &str) {
     #[cfg(windows)]
-    {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-        let text = to_wide(msg);
-        let cap = to_wide(APP_NAME);
-        unsafe {
-            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK);
-        }
-    }
+    win32::show_error(msg, APP_NAME);
     #[cfg(not(windows))]
     {
         eprintln!("Error: {msg}");
@@ -781,9 +762,6 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
-        };
         let current_ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -794,11 +772,7 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
              Rename to:\n{}\n\nRename?",
             new_path.display()
         );
-        let text = to_wide(&prompt);
-        let cap = to_wide("Wrong Extension");
-        let answer =
-            unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONQUESTION) };
-        if answer == IDYES {
+        if win32::ask_yes_no(&prompt, "Wrong Extension", win32::Ask::Question) {
             match std::fs::rename(path, &new_path) {
                 Ok(()) => return Some(new_path),
                 Err(e) => show_error_dialog(&format!("Could not rename file:\n{e}")),
@@ -844,26 +818,6 @@ fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
 
 // ── Window helpers ────────────────────────────────────────────────────────────
 
-/// Work area rectangle in physical pixels: (left, top, right, bottom).
-///
-/// On Windows this is `SPI_GETWORKAREA` — the desktop area excluding the
-/// taskbar, regardless of which edge it is on.
-#[cfg(windows)]
-fn work_area_rect() -> Option<(i32, i32, i32, i32)> {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-    let mut r = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    unsafe {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut _ as *mut _, 0);
-    }
-    ((r.right - r.left) > 0 && (r.bottom - r.top) > 0).then_some((r.left, r.top, r.right, r.bottom))
-}
-
 /// Return the best available monitor, preferring the one the window is on.
 fn current_or_any_monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
     window
@@ -886,7 +840,7 @@ fn heuristic_work_area(monitor: &winit::monitor::MonitorHandle) -> (i32, i32, i3
 /// Elsewhere uses 90% × 85% of the monitor size as a conservative heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
     #[cfg(windows)]
-    if let Some((l, t, r, b)) = work_area_rect() {
+    if let Some((l, t, r, b)) = win32::work_area() {
         let sf = current_or_any_monitor(window)
             .map(|m| m.scale_factor())
             .unwrap_or(1.0);
@@ -930,7 +884,7 @@ fn center_window(window: &Window) {
 
     #[cfg(windows)]
     let (wa_left, wa_top, wa_right, wa_bottom) =
-        work_area_rect().unwrap_or_else(|| heuristic_work_area(&mon));
+        win32::work_area().unwrap_or_else(|| heuristic_work_area(&mon));
 
     #[cfg(not(windows))]
     let (wa_left, wa_top, wa_right, wa_bottom) = heuristic_work_area(&mon);
@@ -1052,38 +1006,9 @@ fn main() {
 
     let mut el_builder: EventLoopBuilder<WakeUp> = EventLoopBuilder::with_user_event();
 
-    // Install a Win32 message hook to intercept two system commands before
-    // winit sees them:
-    //
-    // SC_CLOSE (taskbar thumbnail × button)
-    //   winit 0.29 does not translate this into `CloseRequested`.
-    //   Re-post as WM_CLOSE, which winit does handle.
-    //
-    // SC_MAXIMIZE (title-bar double-click and the maximise button)
-    //   Suppress OS handling so `toggle_maximize()` is the single code path
-    //   for maximise — giving unified behaviour with the client-area
-    //   double-click.
+    // SC_CLOSE re-posted as WM_CLOSE, SC_MAXIMIZE routed to toggle_maximize.
     #[cfg(windows)]
-    el_builder.with_msg_hook(|msg| {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            PostMessageW, SC_CLOSE, SC_MAXIMIZE, WM_CLOSE, WM_SYSCOMMAND,
-        };
-        let msg = msg as *const windows_sys::Win32::UI::WindowsAndMessaging::MSG;
-        unsafe {
-            if (*msg).message == WM_SYSCOMMAND {
-                match ((*msg).wParam & 0xFFF0) as u32 {
-                    SC_CLOSE => {
-                        PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0);
-                    }
-                    SC_MAXIMIZE => {
-                        return true;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        false
-    });
+    win32::install_system_command_hook(&mut el_builder);
 
     let event_loop = el_builder.build().expect("event loop");
     let proxy = event_loop.create_proxy();
