@@ -11,8 +11,10 @@ arrive (command line, drag-and-drop, directory listing) so that files opened fro
 banned in `clippy.toml`, and `disallowed_methods` is `deny`.
 
 ## SVG is not supported (2026-04-07, `8282b3a`)
-Support was built and then removed, dropping `resvg`, `usvg` and `tiny-skia` (~290 lines of `Cargo.lock`). **The
-reason was not recorded in the commit** — maintainer to fill in. Do not re-add SVG without that reason in hand.
+Support was built and then removed, dropping `resvg`, `usvg` and `tiny-skia` (~290 lines of `Cargo.lock`).
+**The viewer supports raster formats only** (maintainer, 2026-11-01): SVG is a vector format, and rendering it took
+a stack of crates that bloated the executable, against the footprint goal. The same rule covers any other vector
+format (PDF, EPS, AI). **Re-opened by:** the maintainer changing the raster-only scope, not by a lighter renderer.
 
 ## The directory listing never stats a file (2026-04-05, `8713c6b`)
 `DirNavigator::rebuild` filters with `DirEntry::file_type()`, which `read_dir` already returned, instead of
