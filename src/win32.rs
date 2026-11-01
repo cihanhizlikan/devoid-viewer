@@ -10,6 +10,7 @@
 use std::cmp::Ordering;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::ptr::null_mut;
 
 use windows_sys::Win32::Foundation::RECT;
 use windows_sys::Win32::UI::Shell::StrCmpLogicalW;
@@ -44,7 +45,7 @@ pub fn ask_yes_no(text: &str, caption: &str, icon: Ask) -> bool {
     let (text, caption) = (to_wide(text), to_wide(caption));
     // SAFETY: both buffers are null-terminated by `to_wide` and outlive the
     // call; a null owner window is allowed.
-    unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_YESNO | icon) == IDYES }
+    unsafe { MessageBoxW(null_mut(), text.as_ptr(), caption.as_ptr(), MB_YESNO | icon) == IDYES }
 }
 
 /// Modal error message box with an OK button and no owner window.
@@ -52,7 +53,12 @@ pub fn show_error(text: &str, caption: &str) {
     let (text, caption) = (to_wide(text), to_wide(caption));
     // SAFETY: as in `ask_yes_no`.
     unsafe {
-        MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_OK);
+        MessageBoxW(
+            null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
     }
 }
 

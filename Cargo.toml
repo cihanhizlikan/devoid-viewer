@@ -35,7 +35,8 @@ trash = { version = "5.2", default-features = false, features = ["coinit_apartme
 
 # ── Windows API ───────────────────────────────────────────────
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = [
+# 0.61, the version softbuffer already pulls in, so ours adds no copy.
+windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
     "Win32_Foundation",
