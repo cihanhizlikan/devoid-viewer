@@ -59,6 +59,14 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## jxl-oxide stays on 0.10 (2026-11-01)
+RUSTSEC-2026-0151 (jxl-grid 0.5: out-of-bounds writes from a crafted JPEG XL) affects 32-bit targets only, and the
+shipped binary is x86_64. The fix needs jxl-oxide 0.12, which compiled with no source changes and passed every
+test, but grew the release binary by 323,584 bytes (+7%, 4,607,488 → 4,931,072). 0.12 always links JPEG bitstream
+reconstruction (`jxl-jbr`, `brotli-decompressor`), and no feature turns it off. The advisory is ignored in
+`deny.toml` with this reason. **Re-opened by:** a 32-bit build shipping, a jxl advisory that reaches 64-bit, or a
+jxl-oxide release that makes reconstruction optional.
+
 ---
 
 # Open decisions

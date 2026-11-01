@@ -1,0 +1,48 @@
+# cargo-deny: security advisories, licences, duplicate crates and sources
+# for the dependency graph that actually ships. Run `cargo deny check`;
+# CI runs it on every push and pull request.
+
+[graph]
+# The product is Windows-only. Without this, winit's Wayland, X11, macOS
+# and Android trees are checked too, none of which reaches the binary.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+# RustSec database. Every vulnerability and unmaintained notice fails the
+# check; an exception goes in `ignore` with the advisory ID and the reason.
+ignore = [
+    # jxl-grid 0.5 out-of-bounds writes: 32-bit targets only, and the
+    # shipped binary is x86_64. The fix needs jxl-oxide 0.12, measured at
+    # +323,584 bytes (+7%). Revisit if a 32-bit build ships or a 64-bit
+    # jxl advisory lands. See docs/settled-decisions.md.
+    { id = "RUSTSEC-2026-0151", reason = "32-bit only; binary is x86_64; fix costs +7% binary size" },
+]
+
+[licenses]
+# Permissive licences only. A new one is a decision: add it here in the
+# same commit as the dependency that needs it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Zlib",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.9
+# The application itself carries no licence field; it is not published
+# (`publish = false` in Cargo.toml), so it is not checked as a dependency.
+private = { ignore = true }
+
+[bans]
+# Duplicates are reported, not fatal: several are forced by winit 0.29
+# pinning an older windows-sys and are only removable with that upgrade.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

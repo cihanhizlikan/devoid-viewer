@@ -63,3 +63,17 @@ cargo fmt --check *> "$env:TEMP\dv-fmt.txt"; (Select-String -Path "$env:TEMP\dv-
 ```
 
 **Report only, not a gate**, until the rustfmt open decision in `docs/settled-decisions.md` is taken.
+
+## 5. Dependencies
+
+Only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changed. Needs `cargo install cargo-deny --locked` once.
+
+```powershell
+cargo deny --locked check *> "$env:TEMP\dv-deny.txt"; "exit=$LASTEXITCODE"
+Select-String -Path "$env:TEMP\dv-deny.txt" -Pattern '^(error|warning)\[|advisories '
+```
+
+A gate: the exit must be 0. The duplicate-version warnings are known (winit 0.29 and notify pull windows-sys
+0.48, softbuffer 0.61); a new one is a finding. An advisory exception goes in `deny.toml` with its reason and,
+where it trades against size or startup, an entry in `docs/settled-decisions.md`. CI also runs this weekly,
+since advisories arrive without any change here.

@@ -33,6 +33,8 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   up as the linker, and the build fails with `link: extra operand`.
 - `cargo` lives in `~/.cargo/bin`, which may not be on the tool shell's `PATH` — prepend it.
 - The toolchain is pinned in `rust-toolchain.toml`; architecture bans live in `clippy.toml` at `deny`.
+- Dependency policy (advisories, licences, duplicates, sources) lives in `deny.toml`, checked by `cargo deny` in
+  CI on every push, every pull request and weekly.
 
 ## Working style
 - **Safe Rust only, `unsafe` only where Windows forces it.** Maintainer: *"If we're writing unmanaged code why
