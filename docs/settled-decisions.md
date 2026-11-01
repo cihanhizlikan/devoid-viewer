@@ -59,6 +59,17 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## Message boxes never run inside a winit callback (2026-11-01)
+A message box runs a modal message loop. Inside a winit 0.29 callback, that loop receives the viewer's `WM_PAINT`,
+which winit cannot deliver mid-callback; it validates and immediately re-posts it with `RedrawWindow`
+(`winit-0.29.15/src/platform_impl/windows/event_loop.rs`, `WM_PAINT` arm). The queue is never idle, so the dialog,
+which only shows once its loop goes idle, never appears, and the process spins. Measured before the fix: the
+"Cannot open image" box was created but never visible, at 97 % of a core; resizing the viewer under the Delete
+confirmation took it to 98 %. Every dialog flow now runs on its own thread via `App::spawn_dialog` (or
+`show_error_dialog`) and reports back through the message channel; afterwards all four cases measured 0–7 %, every
+dialog visible. **Consequence, accepted:** the viewer stays usable while a dialog is open, so a delete may complete
+after the user has moved on, which `on_deleted` and `DirNavigator::remove` handle.
+
 ## Documentation is Markdown in `docs/` (2026-11-01)
 `DevoidViewer_Codebase_Guide.pdf` could not be grepped or diffed, needed repeated "updated the pdf" commits, and
 had drifted (it still described the pre-Explorer sort and a 2–3 MB binary). What it said that the code did not —

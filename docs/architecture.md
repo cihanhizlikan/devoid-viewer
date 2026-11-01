@@ -12,7 +12,9 @@ report back through **one bounded crossbeam channel of capacity 32**:
 - **Decode** — `open_image` spawns one per image not in the preload cache.
 - **Preload** — `preload_adjacent` decodes both neighbours speculatively. Only `LoadOutcome::Ok` is cached: a
   wrong-extension file must go through the rename prompt, which a cache hit would skip.
-- **Delete** — `request_delete` moves the file to the Recycle Bin off the UI thread.
+- **Dialogs** — every message box runs on its own thread (`App::spawn_dialog`, `show_error_dialog`), never inside
+  a winit callback; see the settled decision. The Delete thread confirms, then recycles the file; the rename thread
+  asks, then renames. Each posts `Deleted`, `DeleteCancelled` or `Renamed`.
 - **Directory watcher** — `notify-debouncer-mini`'s own thread, coalescing bursts over `DIR_WATCH_DEBOUNCE`
   (50 ms), sends a payload-free `Msg::DirectoryChanged`.
 

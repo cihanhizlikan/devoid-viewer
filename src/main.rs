@@ -96,6 +96,13 @@ enum Msg {
         path: PathBuf,
         result: Result<(), String>,
     },
+    /// The user answered No to the delete confirmation.
+    DeleteCancelled,
+    /// The user accepted the wrong-extension rename and it succeeded.
+    Renamed {
+        old_path: PathBuf,
+        new_path: PathBuf,
+    },
     /// The watched directory changed (file added or removed).
     /// Triggers a navigator rebuild on the UI thread.
     DirectoryChanged,
@@ -125,7 +132,7 @@ struct DrainResult {
     /// Non-None when any error occurred — reveal the window then show this.
     error_msg: Option<String>,
     /// Non-None when a file decoded under the wrong extension — offer a rename
-    /// after the drain loop so the dialog does not block the drain.
+    /// once the drain is done.
     rename_offer: Option<(PathBuf, String)>,
 }
 
@@ -509,25 +516,27 @@ impl App {
 
     // ── Deletion ──────────────────────────────────────────────────────────────
 
-    /// Move the current file to the Recycle Bin on a background thread.
+    /// Confirm, then move the current file to the Recycle Bin, all on a
+    /// background thread (see `spawn_dialog`).
     ///
     /// Recycling, not deleting, so a mistaken Delete is undoable. Where the
     /// volume has no Recycle Bin (some network shares and removable drives)
     /// the shell itself warns before deleting permanently.
     fn request_delete(&mut self, proxy: &Proxy) {
-        let Some(path) = self.current_path.clone() else {
+        let (Some(path), Some(filename)) = (self.current_path.clone(), self.current_filename())
+        else {
             return;
         };
         self.deleting = true;
-        let tx = self.msg_tx.clone();
-        let proxy = proxy.clone();
-        std::thread::spawn(move || {
+        self.spawn_dialog(proxy, move || {
+            if !confirm_delete_dialog(&filename) {
+                return Some(Msg::DeleteCancelled);
+            }
             // `trash` unwraps a failed COM instantiation internally. Under
             // `panic = "abort"` that ends the process, recorded in the Event
             // Log, rather than leaving `deleting` stuck at `true`.
             let result = trash::delete(&path).map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Deleted { path, result });
-            let _ = proxy.send_event(WakeUp);
+            Some(Msg::Deleted { path, result })
         });
     }
 
@@ -540,16 +549,53 @@ impl App {
         self.deleting = false;
         match result {
             Ok(()) => {
+                let was_current = self.current_path.as_deref() == Some(path.as_path());
                 self.navigator.remove(&path);
-                self.preload_cache.clear();
-                match self.navigator.current().cloned() {
-                    Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
-                    None => self.clear_image(),
+                self.preload_cache.remove(&path);
+                // The viewer stays usable while the confirmation is open, so
+                // the user may have moved on; only replace the view if the
+                // deleted file is the one on screen.
+                if was_current {
+                    self.preload_cache.clear();
+                    match self.navigator.current().cloned() {
+                        Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
+                        None => self.clear_image(),
+                    }
                 }
                 None
             }
             Err(e) => Some(format!("Delete failed:\n{e}")),
         }
+    }
+
+    /// Offer to rename a file whose extension does not match its contents,
+    /// on a background thread (see `spawn_dialog`).
+    fn request_rename(&self, path: PathBuf, correct_ext: String, proxy: &Proxy) {
+        self.spawn_dialog(proxy, move || {
+            offer_rename(&path, &correct_ext).map(|new_path| Msg::Renamed {
+                old_path: path,
+                new_path,
+            })
+        });
+    }
+
+    /// Run a blocking dialog flow on its own thread and post its outcome.
+    ///
+    /// A message box runs a modal message loop. Run inside a winit callback,
+    /// that loop receives the viewer's `WM_PAINT`, which winit 0.29 cannot
+    /// deliver mid-callback and re-posts with `RedrawWindow` — a paint storm
+    /// that pins a core and keeps the dialog from ever becoming visible
+    /// (it shows only once its queue is idle). On its own thread the dialog
+    /// has its own queue, and the event loop keeps painting.
+    fn spawn_dialog(&self, proxy: &Proxy, flow: impl FnOnce() -> Option<Msg> + Send + 'static) {
+        let tx = self.msg_tx.clone();
+        let proxy = proxy.clone();
+        std::thread::spawn(move || {
+            if let Some(msg) = flow() {
+                let _ = tx.send(msg);
+                let _ = proxy.send_event(WakeUp);
+            }
+        });
     }
 
     // ── Message drain ─────────────────────────────────────────────────────────
@@ -596,6 +642,12 @@ impl App {
                     if let Some(e) = self.on_deleted(path, result, proxy) {
                         dr.error_msg = Some(e);
                     }
+                }
+                Msg::DeleteCancelled => {
+                    self.deleting = false;
+                }
+                Msg::Renamed { old_path, new_path } => {
+                    self.apply_rename(&old_path, new_path);
                 }
                 Msg::DirectoryChanged => {
                     self.on_directory_changed(proxy);
@@ -712,6 +764,10 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 }
 
 // ── Native dialogs (Windows) ──────────────────────────────────────────────────
+//
+// The blocking ones below run off the event-loop thread only: see
+// `App::spawn_dialog` for why a message box must never run inside a winit
+// callback.
 
 fn confirm_delete_dialog(filename: &str) -> bool {
     #[cfg(windows)]
@@ -729,9 +785,11 @@ fn confirm_delete_dialog(filename: &str) -> bool {
     }
 }
 
-fn show_error_dialog(msg: &str) {
+/// Show an error box on its own thread and return at once; there is no
+/// answer to wait for.
+fn show_error_dialog(msg: String) {
     #[cfg(windows)]
-    win32::show_error(msg, APP_NAME);
+    std::thread::spawn(move || win32::show_error(&msg, APP_NAME));
     #[cfg(not(windows))]
     {
         eprintln!("Error: {msg}");
@@ -774,7 +832,7 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
         if win32::ask_yes_no(&prompt, "Wrong Extension", win32::Ask::Question) {
             match std::fs::rename(path, &new_path) {
                 Ok(()) => return Some(new_path),
-                Err(e) => show_error_dialog(&format!("Could not rename file:\n{e}")),
+                Err(e) => win32::show_error(&format!("Could not rename file:\n{e}"), APP_NAME),
             }
         }
     }
@@ -1068,14 +1126,11 @@ fn main() {
 
                     if let Some(msg) = dr.error_msg {
                         shown = ensure_visible(&window, shown);
-                        show_error_dialog(&msg);
+                        show_error_dialog(msg);
                     }
 
-                    if let Some((old_path, correct_ext)) = dr.rename_offer {
-                        if let Some(new_path) = offer_rename(&old_path, &correct_ext) {
-                            app.apply_rename(&old_path, new_path);
-                            update_title(&window, app.current_filename().as_deref());
-                        }
+                    if let Some((path, correct_ext)) = dr.rename_offer {
+                        app.request_rename(path, correct_ext, &proxy);
                     }
 
                     window.request_redraw();
@@ -1142,13 +1197,7 @@ fn main() {
                             app.navigate(false, &proxy);
                             window.request_redraw();
                         }
-                        KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
-                            if let Some(fname) = app.current_filename() {
-                                if confirm_delete_dialog(&fname) {
-                                    app.request_delete(&proxy);
-                                }
-                            }
-                        }
+                        KeyCode::Delete if !app.deleting => app.request_delete(&proxy),
                         KeyCode::KeyF | KeyCode::F11 => {
                             app.toggle_fullscreen(&window);
                             window.request_redraw();

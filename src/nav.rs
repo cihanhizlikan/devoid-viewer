@@ -70,7 +70,13 @@ impl DirNavigator {
     pub fn remove(&mut self, path: &Path) {
         if let Some(pos) = self.files.iter().position(|p| p.as_path() == path) {
             self.files.remove(pos);
-            self.index = pos.min(self.files.len().saturating_sub(1));
+            // Stay on the same file when another one goes; when the current
+            // file goes, its successor (or the new last file) takes its place.
+            if pos < self.index {
+                self.index -= 1;
+            } else if pos == self.index {
+                self.index = pos.min(self.files.len().saturating_sub(1));
+            }
         }
     }
 
@@ -411,6 +417,18 @@ mod tests {
         let mut nav = open(&dir, "3.png");
         nav.remove(&dir.path().join("3.png"));
         assert_eq!(current_name(&nav), "2.png");
+    }
+
+    /// A delete confirmed after the user has navigated on removes a file
+    /// that is no longer current; the view must stay where it is.
+    #[test]
+    fn removing_another_file_keeps_the_current_one() {
+        let dir = dir_with(&["1.png", "2.png", "3.png"]);
+        let mut nav = open(&dir, "3.png");
+        nav.remove(&dir.path().join("1.png"));
+        assert_eq!(current_name(&nav), "3.png");
+        nav.remove(&dir.path().join("4.png"));
+        assert_eq!(current_name(&nav), "3.png");
     }
 
     #[test]
