@@ -33,18 +33,17 @@ use loader::{load_image, DecodedImage, LoadOutcome};
 use nav::DirNavigator;
 use notify_debouncer_mini::{new_debouncer, Debouncer};
 use softbuffer::Surface;
+#[cfg(windows)]
+use winit::platform::windows::EventLoopBuilderExtWindows;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{
-        ElementState, Event, KeyEvent, MouseButton,
-        MouseScrollDelta, TouchPhase, WindowEvent,
+        ElementState, Event, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
     },
     event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{KeyCode, PhysicalKey},
     window::{Fullscreen, Window, WindowBuilder},
 };
-#[cfg(windows)]
-use winit::platform::windows::EventLoopBuilderExtWindows;
 
 // ── Type aliases ─────────────────────────────────────────────────────────────
 
@@ -76,31 +75,25 @@ const DIR_WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 enum Msg {
     /// Primary decode finished successfully.
     Loaded {
-        path:  PathBuf,
+        path: PathBuf,
         image: DecodedImage,
-        mode:  OpenMode,
+        mode: OpenMode,
     },
     /// Decoded after header sniffing — the file's extension was wrong.
     /// Carries the correct extension so the UI can offer to rename.
     WrongExtension {
-        path:        PathBuf,
-        image:       DecodedImage,
-        mode:        OpenMode,
+        path: PathBuf,
+        image: DecodedImage,
+        mode: OpenMode,
         correct_ext: String,
     },
     /// Speculative decode for a neighbour file (preload cache).
-    Preloaded {
-        path:  PathBuf,
-        image: DecodedImage,
-    },
+    Preloaded { path: PathBuf, image: DecodedImage },
     /// File is not a recognised image even after header sniffing.
-    Unsupported {
-        path:   PathBuf,
-        reason: String,
-    },
+    Unsupported { path: PathBuf, reason: String },
     /// Async deletion finished.
     Deleted {
-        path:   PathBuf,
+        path: PathBuf,
         result: Result<(), String>,
     },
     /// The watched directory changed (file added or removed).
@@ -128,9 +121,9 @@ struct View<'a> {
 #[derive(Default)]
 struct DrainResult {
     /// Non-None when the first image loaded — resize the window to these dims.
-    resize_to:    Option<(u32, u32)>,
+    resize_to: Option<(u32, u32)>,
     /// Non-None when any error occurred — reveal the window then show this.
-    error_msg:    Option<String>,
+    error_msg: Option<String>,
     /// Non-None when a file decoded under the wrong extension — offer a rename
     /// after the drain loop so the dialog does not block the drain.
     rename_offer: Option<(PathBuf, String)>,
@@ -149,25 +142,25 @@ enum OpenMode {
 
 struct App {
     // ── Display ───────────────────────────────────────────────────────────────
-    current_path:  Option<PathBuf>,
+    current_path: Option<PathBuf>,
     current_image: Option<DecodedImage>,
 
     // ── Animation ─────────────────────────────────────────────────────────────
-    frame_index:   usize,
+    frame_index: usize,
     next_frame_at: Option<Instant>,
 
     // ── Navigation ────────────────────────────────────────────────────────────
     navigator: DirNavigator,
 
     // ── Async I/O ─────────────────────────────────────────────────────────────
-    msg_tx:        Sender<Msg>,
-    msg_rx:        Receiver<Msg>,
+    msg_tx: Sender<Msg>,
+    msg_rx: Receiver<Msg>,
     /// Path currently being decoded on a background thread.
     /// Used to discard stale messages when the user navigates quickly.
-    loading_path:  Option<PathBuf>,
+    loading_path: Option<PathBuf>,
     preload_cache: HashMap<PathBuf, DecodedImage>,
     /// True while a deletion is in flight — prevents a second Delete keypress.
-    deleting:      bool,
+    deleting: bool,
 
     // ── Window state ──────────────────────────────────────────────────────────
     /// True while waiting for a resize to land before revealing the window.
@@ -178,46 +171,46 @@ struct App {
     /// restore it exactly. The position is not saved — we always centre on
     /// restore, which is simpler and avoids off-screen placement when the
     /// user has moved the window to a secondary monitor.
-    pre_maximize:   Option<PhysicalSize<u32>>,
+    pre_maximize: Option<PhysicalSize<u32>>,
     /// True when the window is in our managed-maximise state.
-    maximized:      bool,
+    maximized: bool,
     /// True when the window is in borderless fullscreen.
-    fullscreen:     bool,
+    fullscreen: bool,
     /// Timestamp of the last left-click, for double-click detection.
-    last_click:     Option<Instant>,
+    last_click: Option<Instant>,
 
     // ── Directory watching ────────────────────────────────────────────────────
     /// Active filesystem watcher for the current directory.
     /// Replaced whenever the watched directory changes; dropping it
     /// unregisters the OS watch handle.
-    dir_watcher:    Option<DirWatcher>,
+    dir_watcher: Option<DirWatcher>,
     /// The directory currently being watched. Tracked separately from the
     /// navigator because `set_current()` updates the navigator before
     /// `apply_image()` runs, making the navigator an unreliable signal
     /// for whether the watcher needs to be (re)installed.
-    watched_dir:    Option<PathBuf>,
+    watched_dir: Option<PathBuf>,
 }
 
 impl App {
     fn new(msg_tx: Sender<Msg>, msg_rx: Receiver<Msg>) -> Self {
         App {
-            current_path:   None,
-            current_image:  None,
-            frame_index:    0,
-            next_frame_at:  None,
-            navigator:      DirNavigator::default(),
+            current_path: None,
+            current_image: None,
+            frame_index: 0,
+            next_frame_at: None,
+            navigator: DirNavigator::default(),
             msg_tx,
             msg_rx,
-            loading_path:   None,
-            preload_cache:  HashMap::new(),
-            deleting:       false,
+            loading_path: None,
+            preload_cache: HashMap::new(),
+            deleting: false,
             pending_center: false,
-            pre_maximize:   None,
-            maximized:      false,
-            fullscreen:     false,
-            last_click:     None,
-            dir_watcher:    None,
-            watched_dir:    None,
+            pre_maximize: None,
+            maximized: false,
+            fullscreen: false,
+            last_click: None,
+            dir_watcher: None,
+            watched_dir: None,
         }
     }
 
@@ -231,7 +224,8 @@ impl App {
 
     /// The filename component of the current path, for the title bar and dialogs.
     fn current_filename(&self) -> Option<String> {
-        self.current_path.as_deref()
+        self.current_path
+            .as_deref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
     }
@@ -240,8 +234,9 @@ impl App {
 
     /// Record a left-click and return `true` when it completes a double-click.
     fn register_click(&mut self) -> bool {
-        let now       = Instant::now();
-        let is_double = self.last_click
+        let now = Instant::now();
+        let is_double = self
+            .last_click
             .is_some_and(|t| now.duration_since(t) <= DOUBLE_CLICK);
         self.last_click = Some(now);
         is_double
@@ -253,7 +248,9 @@ impl App {
     /// exactly on the next toggle. Always centres on restore. Independent
     /// of fullscreen — double-click in fullscreen is a no-op.
     fn toggle_maximize(&mut self, window: &Window) {
-        if self.fullscreen { return; }
+        if self.fullscreen {
+            return;
+        }
 
         if self.maximized {
             debug_assert!(
@@ -276,15 +273,20 @@ impl App {
     /// Toggle borderless fullscreen on the current monitor.
     /// Independent of the managed-maximise state.
     fn toggle_fullscreen(&mut self, window: &Window) {
-        let target = if self.fullscreen { None }
-                     else { Some(Fullscreen::Borderless(None)) };
+        let target = if self.fullscreen {
+            None
+        } else {
+            Some(Fullscreen::Borderless(None))
+        };
         window.set_fullscreen(target);
         self.fullscreen = !self.fullscreen;
     }
 
     /// Exit fullscreen if active. Returns `true` when a change was made.
     fn exit_fullscreen(&mut self, window: &Window) -> bool {
-        if !self.fullscreen { return false; }
+        if !self.fullscreen {
+            return false;
+        }
         window.set_fullscreen(None);
         self.fullscreen = false;
         true
@@ -304,16 +306,22 @@ impl App {
         self.loading_path = Some(path.clone());
         self.navigator.set_current(path.clone());
 
-        let tx    = self.msg_tx.clone();
+        let tx = self.msg_tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let msg = match load_image(&path) {
-                LoadOutcome::Ok(img) =>
-                    Msg::Loaded { path, image: img, mode },
-                LoadOutcome::WrongExtension(img, ext) =>
-                    Msg::WrongExtension { path, image: img, mode, correct_ext: ext },
-                LoadOutcome::Unsupported(reason) =>
-                    Msg::Unsupported { path, reason },
+                LoadOutcome::Ok(img) => Msg::Loaded {
+                    path,
+                    image: img,
+                    mode,
+                },
+                LoadOutcome::WrongExtension(img, ext) => Msg::WrongExtension {
+                    path,
+                    image: img,
+                    mode,
+                    correct_ext: ext,
+                },
+                LoadOutcome::Unsupported(reason) => Msg::Unsupported { path, reason },
             };
             let _ = tx.send(msg);
             let _ = proxy.send_event(WakeUp);
@@ -324,15 +332,15 @@ impl App {
     /// and reset animation. Returns `Some((w, h))` when a resize is needed.
     fn apply_image(
         &mut self,
-        path:  PathBuf,
-        img:   DecodedImage,
-        mode:  OpenMode,
+        path: PathBuf,
+        img: DecodedImage,
+        mode: OpenMode,
         proxy: &Proxy,
     ) -> Option<(u32, u32)> {
         let resize = (mode == OpenMode::FirstImage).then_some((img.width, img.height));
         self.current_image = Some(img);
-        self.current_path  = Some(path.clone());
-        self.loading_path  = None;
+        self.current_path = Some(path.clone());
+        self.loading_path = None;
 
         // (Re)install the directory watcher when the parent directory changes.
         // We compare against `watched_dir` rather than the navigator's
@@ -353,7 +361,7 @@ impl App {
 
     fn clear_image(&mut self) {
         self.current_image = None;
-        self.current_path  = None;
+        self.current_path = None;
         self.reset_animation();
     }
 
@@ -365,7 +373,7 @@ impl App {
     /// On any failure the watcher is simply absent — navigation still works,
     /// the sibling list is just static until the next directory change.
     fn watch_dir(&mut self, dir: &Path, proxy: &Proxy) {
-        let tx    = self.msg_tx.clone();
+        let tx = self.msg_tx.clone();
         let proxy = proxy.clone();
 
         let ok = (|| {
@@ -377,10 +385,14 @@ impl App {
                         let _ = proxy.send_event(WakeUp);
                     }
                 },
-            ).ok()?;
+            )
+            .ok()?;
 
             use notify_debouncer_mini::notify::RecursiveMode;
-            debouncer.watcher().watch(dir, RecursiveMode::NonRecursive).ok()?;
+            debouncer
+                .watcher()
+                .watch(dir, RecursiveMode::NonRecursive)
+                .ok()?;
             Some(debouncer)
         })();
 
@@ -398,13 +410,14 @@ impl App {
         let current = self.current_path.clone();
         self.navigator.rebuild_current(current.as_deref());
 
-        let still_present = current.as_deref()
+        let still_present = current
+            .as_deref()
             .is_some_and(|p| self.navigator.contains(p));
 
         if !still_present {
             match self.navigator.current().cloned() {
                 Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
-                None       => self.clear_image(),
+                None => self.clear_image(),
             }
         }
     }
@@ -418,8 +431,10 @@ impl App {
             .into_iter()
             .flatten()
         {
-            if self.preload_cache.contains_key(&path) { continue; }
-            let tx    = self.msg_tx.clone();
+            if self.preload_cache.contains_key(&path) {
+                continue;
+            }
+            let tx = self.msg_tx.clone();
             let proxy = proxy.clone();
             std::thread::spawn(move || {
                 if let LoadOutcome::Ok(img) = load_image(&path) {
@@ -433,8 +448,10 @@ impl App {
     // ── Animation ─────────────────────────────────────────────────────────────
 
     fn reset_animation(&mut self) {
-        self.frame_index   = 0;
-        self.next_frame_at = self.current_image.as_ref()
+        self.frame_index = 0;
+        self.next_frame_at = self
+            .current_image
+            .as_ref()
             .filter(|i| i.is_animated())
             .map(|i| Instant::now() + Duration::from_millis(i.frame(0).delay_ms as u64));
     }
@@ -442,8 +459,12 @@ impl App {
     /// Advance one GIF frame if the deadline has passed.
     /// Returns `true` when a redraw is needed.
     fn tick_animation(&mut self) -> bool {
-        let Some(deadline) = self.next_frame_at else { return false; };
-        if Instant::now() < deadline { return false; }
+        let Some(deadline) = self.next_frame_at else {
+            return false;
+        };
+        if Instant::now() < deadline {
+            return false;
+        }
 
         let Some(img) = &self.current_image else {
             self.next_frame_at = None;
@@ -464,7 +485,11 @@ impl App {
     /// disappears simultaneously.
     fn navigate(&mut self, forward: bool, proxy: &Proxy) {
         for _ in 0..self.navigator.len() {
-            let next = if forward { self.navigator.next() } else { self.navigator.prev() };
+            let next = if forward {
+                self.navigator.next()
+            } else {
+                self.navigator.prev()
+            };
             match next {
                 None => return,
                 Some(path) if path.exists() => {
@@ -490,9 +515,11 @@ impl App {
     /// volume has no Recycle Bin (some network shares and removable drives)
     /// the shell itself warns before deleting permanently.
     fn request_delete(&mut self, proxy: &Proxy) {
-        let Some(path) = self.current_path.clone() else { return };
+        let Some(path) = self.current_path.clone() else {
+            return;
+        };
         self.deleting = true;
-        let tx    = self.msg_tx.clone();
+        let tx = self.msg_tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             // `trash` unwraps a failed COM instantiation internally. Catch
@@ -508,9 +535,9 @@ impl App {
 
     fn on_deleted(
         &mut self,
-        path:   PathBuf,
+        path: PathBuf,
         result: Result<(), String>,
-        proxy:  &Proxy,
+        proxy: &Proxy,
     ) -> Option<String> {
         self.deleting = false;
         match result {
@@ -519,7 +546,7 @@ impl App {
                 self.preload_cache.clear();
                 match self.navigator.current().cloned() {
                     Some(next) => self.open_image(next, OpenMode::Navigate, proxy),
-                    None       => self.clear_image(),
+                    None => self.clear_image(),
                 }
                 None
             }
@@ -546,7 +573,12 @@ impl App {
                         dr.resize_to = self.apply_image(path, image, mode, proxy);
                     }
                 }
-                Msg::WrongExtension { path, image, mode, correct_ext } => {
+                Msg::WrongExtension {
+                    path,
+                    image,
+                    mode,
+                    correct_ext,
+                } => {
                     if self.is_active_load(&path) {
                         dr.resize_to = self.apply_image(path.clone(), image, mode, proxy);
                         debug_assert!(
@@ -617,10 +649,18 @@ fn blend_channel(src: u8, alpha: u32) -> u8 {
 /// Alpha-composite a straight-RGBA pixel over the background colour.
 #[inline]
 fn composite(r: u8, g: u8, b: u8, a: u8) -> u32 {
-    if a == 255 { return pack_rgb(r, g, b); }
-    if a == 0   { return pack_rgb(BG, BG, BG); }
+    if a == 255 {
+        return pack_rgb(r, g, b);
+    }
+    if a == 0 {
+        return pack_rgb(BG, BG, BG);
+    }
     let a32 = a as u32;
-    pack_rgb(blend_channel(r, a32), blend_channel(g, a32), blend_channel(b, a32))
+    pack_rgb(
+        blend_channel(r, a32),
+        blend_channel(g, a32),
+        blend_channel(b, a32),
+    )
 }
 
 /// Pack RGB bytes into softbuffer's `0x00RRGGBB` u32.
@@ -639,13 +679,13 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
     };
 
     let scale = fit_scale(v.image.width, v.image.height, win_w, win_h);
-    let dst_w = (v.image.width  as f32 * scale) as i32;
+    let dst_w = (v.image.width as f32 * scale) as i32;
     let dst_h = (v.image.height as f32 * scale) as i32;
     let off_x = ((win_w as f32 - dst_w as f32) / 2.0) as i32;
     let off_y = ((win_h as f32 - dst_h as f32) / 2.0) as i32;
 
-    let pixels    = v.image.frame(v.frame).pixels.as_slice();
-    let iw        = v.image.width;
+    let pixels = v.image.frame(v.frame).pixels.as_slice();
+    let iw = v.image.width;
     let inv_scale = 1.0 / scale;
 
     for dy in 0..win_h as i32 {
@@ -664,11 +704,7 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
         row[..img_x0].fill(bg);
 
         for (dx, px) in (img_x0..).zip(&mut row[img_x0..img_x1]) {
-            let [r, g, b, a] = nearest(
-                pixels, iw,
-                (dx as i32 - off_x) as f32 * inv_scale,
-                sy,
-            );
+            let [r, g, b, a] = nearest(pixels, iw, (dx as i32 - off_x) as f32 * inv_scale, sy);
             *px = composite(r, g, b, a);
         }
 
@@ -683,37 +719,43 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 fn to_wide(s: &str) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn confirm_delete_dialog(filename: &str) -> bool {
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONWARNING, MB_YESNO, IDYES,
+            MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
         };
         let text = to_wide(&format!("Move to the Recycle Bin?\n\n{filename}"));
-        let cap  = to_wide("Delete Image");
-        unsafe {
-            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES
-        }
+        let cap = to_wide("Delete Image");
+        unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONWARNING) == IDYES }
     }
     #[cfg(not(windows))]
-    { let _ = filename; true }
+    {
+        let _ = filename;
+        true
+    }
 }
 
 fn show_error_dialog(msg: &str) {
     #[cfg(windows)]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONERROR, MB_OK,
-        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
         let text = to_wide(msg);
-        let cap  = to_wide(APP_NAME);
-        unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK); }
+        let cap = to_wide(APP_NAME);
+        unsafe {
+            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_ICONERROR | MB_OK);
+        }
     }
     #[cfg(not(windows))]
-    { eprintln!("Error: {msg}"); }
+    {
+        eprintln!("Error: {msg}");
+    }
 }
 
 /// Offer to rename `path` to use `correct_ext`.
@@ -730,18 +772,17 @@ fn show_error_dialog(msg: &str) {
 /// `5 (2).jpg`, etc.
 /// Returns `Some(new_path)` when the rename succeeded, `None` otherwise.
 fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
-    let writable = std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .is_ok();
-    if !writable { return None; }
+    let writable = std::fs::OpenOptions::new().write(true).open(path).is_ok();
+    if !writable {
+        return None;
+    }
 
     let new_path = unique_rename_target(path, correct_ext);
 
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, MB_ICONQUESTION, MB_YESNO, IDYES,
+            MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO,
         };
         let current_ext = path
             .extension()
@@ -753,20 +794,21 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
              Rename to:\n{}\n\nRename?",
             new_path.display()
         );
-        let text   = to_wide(&prompt);
-        let cap    = to_wide("Wrong Extension");
-        let answer = unsafe {
-            MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONQUESTION)
-        };
+        let text = to_wide(&prompt);
+        let cap = to_wide("Wrong Extension");
+        let answer =
+            unsafe { MessageBoxW(0, text.as_ptr(), cap.as_ptr(), MB_YESNO | MB_ICONQUESTION) };
         if answer == IDYES {
             match std::fs::rename(path, &new_path) {
-                Ok(())  => return Some(new_path),
-                Err(e)  => show_error_dialog(&format!("Could not rename file:\n{e}")),
+                Ok(()) => return Some(new_path),
+                Err(e) => show_error_dialog(&format!("Could not rename file:\n{e}")),
             }
         }
     }
     #[cfg(not(windows))]
-    { let _ = new_path; }
+    {
+        let _ = new_path;
+    }
 
     None
 }
@@ -779,7 +821,8 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
 /// - `5.png` + `"jpg"` → `5 (1).jpg`      (if `5.jpg` already exists)
 /// - `5.png` + `"jpg"` → `5 (2).jpg`      (if `5.jpg` and `5 (1).jpg` exist)
 fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
-    let stem   = path.file_stem()
+    let stem = path
+        .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let parent = path.parent().unwrap_or(Path::new(""));
@@ -809,25 +852,31 @@ fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
 fn work_area_rect() -> Option<(i32, i32, i32, i32)> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-    let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
     unsafe {
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut r as *mut _ as *mut _, 0);
     }
-    ((r.right - r.left) > 0 && (r.bottom - r.top) > 0)
-        .then_some((r.left, r.top, r.right, r.bottom))
+    ((r.right - r.left) > 0 && (r.bottom - r.top) > 0).then_some((r.left, r.top, r.right, r.bottom))
 }
 
 /// Return the best available monitor, preferring the one the window is on.
 fn current_or_any_monitor(window: &Window) -> Option<winit::monitor::MonitorHandle> {
-    window.current_monitor().or_else(|| window.available_monitors().next())
+    window
+        .current_monitor()
+        .or_else(|| window.available_monitors().next())
 }
 
 /// Heuristic work area as a physical-pixel rect when no OS API is available.
 /// Uses 90% × 85% of the monitor size, anchored at the monitor origin.
 fn heuristic_work_area(monitor: &winit::monitor::MonitorHandle) -> (i32, i32, i32, i32) {
-    let pos  = monitor.position();
+    let pos = monitor.position();
     let size = monitor.size();
-    let w = (size.width  as f64 * 0.90) as i32;
+    let w = (size.width as f64 * 0.90) as i32;
     let h = (size.height as f64 * 0.85) as i32;
     (pos.x, pos.y, pos.x + w, pos.y + h)
 }
@@ -847,7 +896,7 @@ fn work_area(window: &Window) -> (f64, f64) {
     current_or_any_monitor(window)
         .map(|m| {
             let sf = m.scale_factor();
-            let s  = m.size();
+            let s = m.size();
             (s.width as f64 / sf * 0.90, s.height as f64 / sf * 0.85)
         })
         .unwrap_or((1152.0, 648.0))
@@ -859,7 +908,9 @@ fn work_area(window: &Window) -> (f64, f64) {
 /// (outer minus inner size) so no hardcoded pixel value is assumed.
 fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
     let (max_w, max_h) = work_area(window);
-    let title_bar_h = window.outer_size().height
+    let title_bar_h = window
+        .outer_size()
+        .height
         .saturating_sub(window.inner_size().height) as f64;
     let available_h = (max_h - title_bar_h).max(1.0);
     let scale = (max_w / w as f64).min(available_h / h as f64).min(1.0);
@@ -872,7 +923,9 @@ fn clamp_to_work_area(w: u32, h: u32, window: &Window) -> (u32, u32) {
 /// so the window is always placed clear of the taskbar regardless of which
 /// edge it is on.
 fn center_window(window: &Window) {
-    let Some(mon) = current_or_any_monitor(window) else { return };
+    let Some(mon) = current_or_any_monitor(window) else {
+        return;
+    };
     let ws = window.outer_size();
 
     #[cfg(windows)]
@@ -882,7 +935,7 @@ fn center_window(window: &Window) {
     #[cfg(not(windows))]
     let (wa_left, wa_top, wa_right, wa_bottom) = heuristic_work_area(&mon);
 
-    let wa_w = wa_right  - wa_left;
+    let wa_w = wa_right - wa_left;
     let wa_h = wa_bottom - wa_top;
 
     let x = wa_left + (wa_w - ws.width as i32) / 2;
@@ -890,9 +943,9 @@ fn center_window(window: &Window) {
     // Pin to the top if taller than the work area so the title bar stays
     // accessible; never let the bottom exceed wa_bottom.
     let max_y = wa_bottom - ws.height as i32;
-    let y     = (wa_top + (wa_h - ws.height as i32) / 2)
-                    .max(wa_top)
-                    .min(max_y.max(wa_top));
+    let y = (wa_top + (wa_h - ws.height as i32) / 2)
+        .max(wa_top)
+        .min(max_y.max(wa_top));
 
     window.set_outer_position(PhysicalPosition::new(x, y));
 }
@@ -902,7 +955,7 @@ fn center_window(window: &Window) {
 fn update_title(window: &Window, filename: Option<&str>) {
     match filename {
         Some(name) => window.set_title(&format!("{name} \u{2014} {APP_NAME}")),
-        None       => window.set_title(APP_NAME),
+        None => window.set_title(APP_NAME),
     }
 }
 
@@ -911,10 +964,20 @@ fn update_title(window: &Window, filename: Option<&str>) {
 #[inline]
 fn scroll_is_forward(delta: &MouseScrollDelta) -> bool {
     match delta {
-        MouseScrollDelta::LineDelta(x, y) =>
-            if *y != 0.0 { *y < 0.0 } else { *x > 0.0 },
-        MouseScrollDelta::PixelDelta(pos) =>
-            if pos.y != 0.0 { pos.y < 0.0 } else { pos.x > 0.0 },
+        MouseScrollDelta::LineDelta(x, y) => {
+            if *y != 0.0 {
+                *y < 0.0
+            } else {
+                *x > 0.0
+            }
+        }
+        MouseScrollDelta::PixelDelta(pos) => {
+            if pos.y != 0.0 {
+                pos.y < 0.0
+            } else {
+                pos.x > 0.0
+            }
+        }
     }
 }
 
@@ -922,9 +985,9 @@ fn scroll_is_forward(delta: &MouseScrollDelta) -> bool {
 
 /// Decode the application icon embedded at compile time and return a winit Icon.
 fn load_window_icon() -> Option<winit::window::Icon> {
-    let bytes  = include_bytes!("../devoid.ico");
-    let img    = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico).ok()?;
-    let rgba   = img.into_rgba8();
+    let bytes = include_bytes!("../devoid.ico");
+    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico).ok()?;
+    let rgba = img.into_rgba8();
     let (w, h) = rgba.dimensions();
     winit::window::Icon::from_rgba(rgba.into_raw(), w, h).ok()
 }
@@ -934,8 +997,10 @@ fn load_window_icon() -> Option<winit::window::Icon> {
 fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
     let reader = std::io::BufReader::new(std::fs::File::open(path).ok()?);
     image::ImageReader::new(reader)
-        .with_guessed_format().ok()?
-        .into_dimensions().ok()
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// Fill the softbuffer surface with the background colour.
@@ -944,7 +1009,7 @@ fn image_size_hint(path: &Path) -> Option<(u32, u32)> {
 ///
 /// Errors are intentionally swallowed: this is a cosmetic pre-paint.
 fn paint_background(surface: &mut Surface<Arc<Window>, Arc<Window>>, window: &Window) {
-    let size  = window.inner_size();
+    let size = window.inner_size();
     let win_w = NonZeroU32::new(size.width.max(1)).unwrap();
     let win_h = NonZeroU32::new(size.height.max(1)).unwrap();
     if surface.resize(win_w, win_h).is_ok() {
@@ -958,7 +1023,9 @@ fn paint_background(surface: &mut Surface<Arc<Window>, Arc<Window>>, window: &Wi
 /// Make the window visible if it isn't already. Returns `true`.
 #[inline]
 fn ensure_visible(window: &Window, shown: bool) -> bool {
-    if !shown { window.set_visible(true); }
+    if !shown {
+        window.set_visible(true);
+    }
     true
 }
 
@@ -976,7 +1043,8 @@ fn quit() -> ! {
 fn main() {
     let initial_path = std::env::args().nth(1).map(PathBuf::from);
 
-    let (init_w, init_h) = initial_path.as_deref()
+    let (init_w, init_h) = initial_path
+        .as_deref()
         .and_then(image_size_hint)
         .unwrap_or((800, 600));
 
@@ -998,15 +1066,19 @@ fn main() {
     #[cfg(windows)]
     el_builder.with_msg_hook(|msg| {
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            PostMessageW, WM_CLOSE, WM_SYSCOMMAND, SC_CLOSE, SC_MAXIMIZE,
+            PostMessageW, SC_CLOSE, SC_MAXIMIZE, WM_CLOSE, WM_SYSCOMMAND,
         };
         let msg = msg as *const windows_sys::Win32::UI::WindowsAndMessaging::MSG;
         unsafe {
             if (*msg).message == WM_SYSCOMMAND {
                 match ((*msg).wParam & 0xFFF0) as u32 {
-                    SC_CLOSE    => { PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0); }
-                    SC_MAXIMIZE => { return true; }
-                    _           => {}
+                    SC_CLOSE => {
+                        PostMessageW((*msg).hwnd, WM_CLOSE, 0, 0);
+                    }
+                    SC_MAXIMIZE => {
+                        return true;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1014,7 +1086,7 @@ fn main() {
     });
 
     let event_loop = el_builder.build().expect("event loop");
-    let proxy      = event_loop.create_proxy();
+    let proxy = event_loop.create_proxy();
 
     let start_hidden = initial_path.is_some();
 
@@ -1035,155 +1107,168 @@ fn main() {
         center_window(&window);
     }
 
-    let ctx         = softbuffer::Context::new(window.clone()).expect("softbuffer context");
+    let ctx = softbuffer::Context::new(window.clone()).expect("softbuffer context");
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
     paint_background(&mut surface, &window);
 
-    let mut app   = App::new(msg_tx, msg_rx);
+    let mut app = App::new(msg_tx, msg_rx);
     let mut shown = !start_hidden;
 
     if let Some(path) = initial_path {
         app.open_image(path, OpenMode::FirstImage, &proxy);
     }
 
-    event_loop.run(move |event, elwt| {
-        elwt.set_control_flow(match app.next_frame_at {
-            Some(t) => ControlFlow::WaitUntil(t),
-            None    => ControlFlow::Wait,
-        });
+    event_loop
+        .run(move |event, elwt| {
+            elwt.set_control_flow(match app.next_frame_at {
+                Some(t) => ControlFlow::WaitUntil(t),
+                None => ControlFlow::Wait,
+            });
 
-        match event {
-            Event::UserEvent(WakeUp) => {
-                let dr = app.drain_messages(&proxy);
+            match event {
+                Event::UserEvent(WakeUp) => {
+                    let dr = app.drain_messages(&proxy);
 
-                if let Some((iw, ih)) = dr.resize_to {
-                    let (cw, ch) = clamp_to_work_area(iw, ih, &window);
-                    let _ = window.request_inner_size(LogicalSize::new(cw, ch));
-                    app.pending_center = true;
-                    let _ = proxy.send_event(WakeUp);
-                } else if app.pending_center {
-                    center_window(&window);
-                    app.pending_center = false;
-                    shown = ensure_visible(&window, shown);
-                }
-
-                update_title(&window, app.current_filename().as_deref());
-
-                if let Some(msg) = dr.error_msg {
-                    shown = ensure_visible(&window, shown);
-                    show_error_dialog(&msg);
-                }
-
-                if let Some((old_path, correct_ext)) = dr.rename_offer {
-                    if let Some(new_path) = offer_rename(&old_path, &correct_ext) {
-                        app.apply_rename(&old_path, new_path);
-                        update_title(&window, app.current_filename().as_deref());
+                    if let Some((iw, ih)) = dr.resize_to {
+                        let (cw, ch) = clamp_to_work_area(iw, ih, &window);
+                        let _ = window.request_inner_size(LogicalSize::new(cw, ch));
+                        app.pending_center = true;
+                        let _ = proxy.send_event(WakeUp);
+                    } else if app.pending_center {
+                        center_window(&window);
+                        app.pending_center = false;
+                        shown = ensure_visible(&window, shown);
                     }
-                }
 
-                window.request_redraw();
-            }
+                    update_title(&window, app.current_filename().as_deref());
 
-            Event::NewEvents(_) => {
-                if app.tick_animation() {
-                    window.request_redraw();
-                }
-            }
-
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => quit(),
-
-                WindowEvent::Resized(_) => {
-                    if window.is_maximized() && !app.maximized {
-                        app.maximized = true;
+                    if let Some(msg) = dr.error_msg {
+                        shown = ensure_visible(&window, shown);
+                        show_error_dialog(&msg);
                     }
+
+                    if let Some((old_path, correct_ext)) = dr.rename_offer {
+                        if let Some(new_path) = offer_rename(&old_path, &correct_ext) {
+                            app.apply_rename(&old_path, new_path);
+                            update_title(&window, app.current_filename().as_deref());
+                        }
+                    }
+
                     window.request_redraw();
                 }
 
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left, ..
-                } => {
-                    if app.register_click() {
-                        app.toggle_maximize(&window);
-                        if app.pending_center {
-                            let _ = proxy.send_event(WakeUp);
+                Event::NewEvents(_) => {
+                    if app.tick_animation() {
+                        window.request_redraw();
+                    }
+                }
+
+                Event::WindowEvent { event, .. } => match event {
+                    WindowEvent::CloseRequested => quit(),
+
+                    WindowEvent::Resized(_) => {
+                        if window.is_maximized() && !app.maximized {
+                            app.maximized = true;
                         }
                         window.request_redraw();
                     }
-                }
 
-                WindowEvent::MouseWheel { delta, phase, .. }
-                    if phase != TouchPhase::Cancelled =>
-                {
-                    app.navigate(scroll_is_forward(&delta), &proxy);
-                    window.request_redraw();
-                }
-
-                WindowEvent::DroppedFile(path) => {
-                    if loader::is_supported(&path) {
-                        app.open_image(path, OpenMode::Navigate, &proxy);
-                        window.request_redraw();
-                    }
-                }
-
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        physical_key: PhysicalKey::Code(code),
-                        state: ElementState::Pressed, ..
-                    }, ..
-                } => match code {
-                    KeyCode::ArrowRight | KeyCode::ArrowDown  | KeyCode::PageDown => {
-                        app.navigate(true, &proxy);
-                        window.request_redraw();
-                    }
-                    KeyCode::ArrowLeft  | KeyCode::ArrowUp    | KeyCode::PageUp   => {
-                        app.navigate(false, &proxy);
-                        window.request_redraw();
-                    }
-                    KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
-                        if let Some(fname) = app.current_filename() {
-                            if confirm_delete_dialog(&fname) {
-                                app.request_delete(&proxy);
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        if app.register_click() {
+                            app.toggle_maximize(&window);
+                            if app.pending_center {
+                                let _ = proxy.send_event(WakeUp);
                             }
-                        }
-                    }
-                    KeyCode::KeyF | KeyCode::F11 => {
-                        app.toggle_fullscreen(&window);
-                        window.request_redraw();
-                    }
-                    KeyCode::Escape => {
-                        if app.exit_fullscreen(&window) {
                             window.request_redraw();
                         }
                     }
-                    KeyCode::KeyQ => quit(),
+
+                    WindowEvent::MouseWheel { delta, phase, .. }
+                        if phase != TouchPhase::Cancelled =>
+                    {
+                        app.navigate(scroll_is_forward(&delta), &proxy);
+                        window.request_redraw();
+                    }
+
+                    WindowEvent::DroppedFile(path) => {
+                        if loader::is_supported(&path) {
+                            app.open_image(path, OpenMode::Navigate, &proxy);
+                            window.request_redraw();
+                        }
+                    }
+
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                physical_key: PhysicalKey::Code(code),
+                                state: ElementState::Pressed,
+                                ..
+                            },
+                        ..
+                    } => match code {
+                        KeyCode::ArrowRight | KeyCode::ArrowDown | KeyCode::PageDown => {
+                            app.navigate(true, &proxy);
+                            window.request_redraw();
+                        }
+                        KeyCode::ArrowLeft | KeyCode::ArrowUp | KeyCode::PageUp => {
+                            app.navigate(false, &proxy);
+                            window.request_redraw();
+                        }
+                        KeyCode::Delete if app.current_path.is_some() && !app.deleting => {
+                            if let Some(fname) = app.current_filename() {
+                                if confirm_delete_dialog(&fname) {
+                                    app.request_delete(&proxy);
+                                }
+                            }
+                        }
+                        KeyCode::KeyF | KeyCode::F11 => {
+                            app.toggle_fullscreen(&window);
+                            window.request_redraw();
+                        }
+                        KeyCode::Escape => {
+                            if app.exit_fullscreen(&window) {
+                                window.request_redraw();
+                            }
+                        }
+                        KeyCode::KeyQ => quit(),
+                        _ => {}
+                    },
+
+                    WindowEvent::RedrawRequested => {
+                        let size = window.inner_size();
+                        let win_w = size.width;
+                        let win_h = size.height;
+                        if win_w == 0 || win_h == 0 {
+                            return;
+                        }
+
+                        let (Some(nzw), Some(nzh)) =
+                            (NonZeroU32::new(win_w), NonZeroU32::new(win_h))
+                        else {
+                            return;
+                        };
+                        if surface.resize(nzw, nzh).is_err() {
+                            return;
+                        }
+                        let Ok(mut buf) = surface.buffer_mut() else {
+                            return;
+                        };
+                        render(&mut buf, win_w, win_h, app.view());
+                        // Nothing to recover: the next RedrawRequested repaints.
+                        let _ = buf.present();
+                    }
+
                     _ => {}
                 },
 
-                WindowEvent::RedrawRequested => {
-                    let size  = window.inner_size();
-                    let win_w = size.width;
-                    let win_h = size.height;
-                    if win_w == 0 || win_h == 0 { return; }
-
-                    let (Some(nzw), Some(nzh)) = (
-                        NonZeroU32::new(win_w),
-                        NonZeroU32::new(win_h),
-                    ) else { return; };
-                    if surface.resize(nzw, nzh).is_err() { return; }
-                    let Ok(mut buf) = surface.buffer_mut() else { return; };
-                    render(&mut buf, win_w, win_h, app.view());
-                    // Nothing to recover: the next RedrawRequested repaints.
-                    let _ = buf.present();
-                }
-
                 _ => {}
-            },
-
-            _ => {}
-        }
-    }).expect("event loop error");
+            }
+        })
+        .expect("event loop error");
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1196,7 +1281,14 @@ mod tests {
     const BG_PIXEL: u32 = 0x002A_2A2A;
 
     fn single_frame(width: u32, height: u32, pixels: Vec<u8>) -> DecodedImage {
-        DecodedImage { frames: vec![Frame { pixels, delay_ms: 0 }], width, height }
+        DecodedImage {
+            frames: vec![Frame {
+                pixels,
+                delay_ms: 0,
+            }],
+            width,
+            height,
+        }
     }
 
     // ── Pixels ────────────────────────────────────────────────────────────────
@@ -1243,7 +1335,15 @@ mod tests {
         let image = single_frame(1, 1, vec![255, 0, 0, 255]);
         let mut buf = [0u32; 3];
         // Window 3×1: scale = min(1/1, 3/1) = 1, so the pixel lands in the middle.
-        render(&mut buf, 3, 1, Some(View { image: &image, frame: 0 }));
+        render(
+            &mut buf,
+            3,
+            1,
+            Some(View {
+                image: &image,
+                frame: 0,
+            }),
+        );
         assert_eq!(buf, [BG_PIXEL, 0x00FF_0000, BG_PIXEL]);
     }
 
@@ -1252,27 +1352,37 @@ mod tests {
     #[test]
     fn scrolling_down_or_right_goes_forward() {
         use MouseScrollDelta::*;
-        assert!( scroll_is_forward(&LineDelta(0.0, -1.0)));
-        assert!(!scroll_is_forward(&LineDelta(0.0,  1.0)));
-        assert!( scroll_is_forward(&LineDelta(1.0,  0.0)));
+        assert!(scroll_is_forward(&LineDelta(0.0, -1.0)));
+        assert!(!scroll_is_forward(&LineDelta(0.0, 1.0)));
+        assert!(scroll_is_forward(&LineDelta(1.0, 0.0)));
         assert!(!scroll_is_forward(&LineDelta(-1.0, 0.0)));
-        assert!( scroll_is_forward(&PixelDelta(PhysicalPosition::new(0.0, -3.0))));
-        assert!(!scroll_is_forward(&PixelDelta(PhysicalPosition::new(0.0,  3.0))));
+        assert!(scroll_is_forward(&PixelDelta(PhysicalPosition::new(
+            0.0, -3.0
+        ))));
+        assert!(!scroll_is_forward(&PixelDelta(PhysicalPosition::new(
+            0.0, 3.0
+        ))));
     }
 
     // ── Rename target ─────────────────────────────────────────────────────────
 
     #[test]
     fn rename_target_appends_a_counter_until_the_name_is_free() {
-        let dir  = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("5.png");
         assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5.jpg"));
 
         std::fs::write(dir.path().join("5.jpg"), b"").unwrap();
-        assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5 (1).jpg"));
+        assert_eq!(
+            unique_rename_target(&file, "jpg"),
+            dir.path().join("5 (1).jpg")
+        );
 
         std::fs::write(dir.path().join("5 (1).jpg"), b"").unwrap();
-        assert_eq!(unique_rename_target(&file, "jpg"), dir.path().join("5 (2).jpg"));
+        assert_eq!(
+            unique_rename_target(&file, "jpg"),
+            dir.path().join("5 (2).jpg")
+        );
     }
 
     // ── Conventions ───────────────────────────────────────────────────────────
@@ -1281,7 +1391,8 @@ mod tests {
     #[test]
     fn installer_version_matches_cargo() {
         let iss = include_str!("../devoid_viewer_setup.iss");
-        let version = iss.lines()
+        let version = iss
+            .lines()
             .find_map(|l| l.strip_prefix("#define AppVersion"))
             .map(|rest| rest.trim().trim_matches('"'))
             .expect("#define AppVersion in devoid_viewer_setup.iss");

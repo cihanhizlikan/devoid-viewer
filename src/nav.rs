@@ -3,8 +3,8 @@
 //! Maintains a human-sorted list of sibling image files in the same directory
 //! as the currently open file.  Navigation wraps around at both ends.
 
-use std::path::{Path, PathBuf};
 use crate::loader::is_supported;
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub struct DirNavigator {
@@ -35,7 +35,10 @@ impl DirNavigator {
         // trigger if the file disappeared from the directory between the
         // rebuild and this position scan. Navigation still works; the sibling
         // list is restored the next time the directory changes.
-        self.index = self.files.iter().position(|p| *p == path)
+        self.index = self
+            .files
+            .iter()
+            .position(|p| *p == path)
             .unwrap_or_else(|| {
                 self.files = vec![path];
                 0
@@ -114,25 +117,23 @@ impl DirNavigator {
     /// Advance the index in `direction` and return the new current path.
     /// Returns `None` if fewer than 2 images exist (nothing to navigate to).
     fn step(&mut self, direction: Direction) -> Option<PathBuf> {
-        if self.files.len() < 2 { return None; }
+        if self.files.len() < 2 {
+            return None;
+        }
         self.index = self.wrapped_index(direction);
         Some(self.files[self.index].clone())
     }
 
     /// Peek at the neighbour in `direction` without mutating state.
     fn peek(&self, direction: Direction) -> Option<PathBuf> {
-        (self.files.len() > 1).then(|| {
-            self.files[self.wrapped_index(direction)].clone()
-        })
+        (self.files.len() > 1).then(|| self.files[self.wrapped_index(direction)].clone())
     }
 
     /// Compute the neighbour index with wraparound.
     fn wrapped_index(&self, direction: Direction) -> usize {
         match direction {
-            Direction::Forward  => (self.index + 1) % self.files.len(),
-            Direction::Backward => self.index
-                .checked_sub(1)
-                .unwrap_or(self.files.len() - 1),
+            Direction::Forward => (self.index + 1) % self.files.len(),
+            Direction::Backward => self.index.checked_sub(1).unwrap_or(self.files.len() - 1),
         }
     }
 
@@ -157,7 +158,9 @@ impl DirNavigator {
                 // stat() syscall needed. is_file() would cost one
                 // syscall per file, i.e. 5000 disk hits on a cold
                 // cache for a 5K-file folder.
-                if !e.file_type().ok()?.is_file() { return None; }
+                if !e.file_type().ok()?.is_file() {
+                    return None;
+                }
                 let path = e.path();
                 is_supported(&path).then_some(path)
             })
@@ -174,10 +177,7 @@ impl DirNavigator {
 ///
 /// Each sort key is built once per file rather than once per comparison.
 fn sort_like_explorer(paths: &mut Vec<PathBuf>) {
-    let mut keyed: Vec<(SortKey, PathBuf)> = paths
-        .drain(..)
-        .map(|p| (sort_key(&p), p))
-        .collect();
+    let mut keyed: Vec<(SortKey, PathBuf)> = paths.drain(..).map(|p| (sort_key(&p), p)).collect();
     keyed.sort_by(|(a, _), (b, _)| compare_keys(a, b));
     paths.extend(keyed.into_iter().map(|(_, p)| p));
 }
@@ -189,7 +189,8 @@ type SortKey = Vec<u16>;
 #[cfg(windows)]
 fn sort_key(path: &Path) -> SortKey {
     use std::os::windows::ffi::OsStrExt;
-    path.file_name().unwrap_or_default()
+    path.file_name()
+        .unwrap_or_default()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
@@ -214,7 +215,10 @@ type SortKey = String;
 
 #[cfg(not(windows))]
 fn sort_key(path: &Path) -> SortKey {
-    path.file_name().unwrap_or_default().to_string_lossy().to_lowercase()
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_lowercase()
 }
 
 #[cfg(not(windows))]
@@ -242,16 +246,21 @@ fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
     loop {
         match (ai.peek().copied(), bi.peek().copied()) {
             (None, None) => return Ordering::Equal,
-            (None, _)    => return Ordering::Less,
-            (_, None)    => return Ordering::Greater,
+            (None, _) => return Ordering::Less,
+            (_, None) => return Ordering::Greater,
             (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
                 let ord = consume_number(&mut ai).cmp(&consume_number(&mut bi));
-                if ord != Ordering::Equal { return ord; }
+                if ord != Ordering::Equal {
+                    return ord;
+                }
             }
             (Some(ac), Some(bc)) => {
                 let ord = ac.cmp(&bc);
-                if ord != Ordering::Equal { return ord; }
-                ai.next(); bi.next();
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                ai.next();
+                bi.next();
             }
         }
     }
@@ -287,7 +296,8 @@ mod tests {
     }
 
     fn names(nav: &DirNavigator) -> Vec<String> {
-        nav.files.iter()
+        nav.files
+            .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect()
     }
@@ -299,7 +309,12 @@ mod tests {
     }
 
     fn current_name(nav: &DirNavigator) -> String {
-        nav.current().unwrap().file_name().unwrap().to_string_lossy().into_owned()
+        nav.current()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 
     // ── Listing ───────────────────────────────────────────────────────────────
@@ -315,7 +330,10 @@ mod tests {
     #[test]
     fn numbers_sort_by_value() {
         let dir = dir_with(&["img10.png", "img2.png", "img1.png"]);
-        assert_eq!(names(&open(&dir, "img1.png")), ["img1.png", "img2.png", "img10.png"]);
+        assert_eq!(
+            names(&open(&dir, "img1.png")),
+            ["img1.png", "img2.png", "img10.png"]
+        );
     }
 
     #[test]
@@ -330,7 +348,10 @@ mod tests {
     #[test]
     fn accented_letters_sort_with_their_base_letter() {
         let dir = dir_with(&["zebra.png", "\u{e9}lan.png", "eagle.png"]);
-        assert_eq!(names(&open(&dir, "eagle.png")), ["eagle.png", "\u{e9}lan.png", "zebra.png"]);
+        assert_eq!(
+            names(&open(&dir, "eagle.png")),
+            ["eagle.png", "\u{e9}lan.png", "zebra.png"]
+        );
     }
 
     /// Explorer's word sort gives a hyphen almost no weight, so `a-c` sorts
@@ -409,7 +430,7 @@ mod tests {
 
     #[test]
     fn opening_a_file_in_another_directory_rebuilds_the_list() {
-        let first  = dir_with(&["a.png", "b.png"]);
+        let first = dir_with(&["a.png", "b.png"]);
         let second = dir_with(&["x.png"]);
         let mut nav = open(&first, "a.png");
         nav.set_current(second.path().join("x.png"));

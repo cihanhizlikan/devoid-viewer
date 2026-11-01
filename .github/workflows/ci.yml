@@ -62,17 +62,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      # Report only until the rustfmt open decision in
-      # docs/settled-decisions.md is taken. The explicit `exit 0` matters:
-      # GitHub's pwsh wrapper ends every script with `exit $LASTEXITCODE`,
-      # so fmt's own exit 1 would otherwise fail the step.
-      - name: Formatter (report only)
-        shell: pwsh
-        run: |
-          $diffs = (cargo fmt --check 2>&1 | Select-String '^Diff in').Count
-          if ($diffs -gt 0) { "::warning::cargo fmt --check reports $diffs diffs (not gated)" }
-          else { "cargo fmt --check: clean" }
-          exit 0
+      # Default rustfmt style, a gate: see docs/settled-decisions.md.
+      - name: Formatter
+        run: cargo fmt --check
 
   # Advisories, licences, duplicate crates and sources (deny.toml). Reads
   # Cargo.lock and crate metadata only, so it runs on Linux with the graph

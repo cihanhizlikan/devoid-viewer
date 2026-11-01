@@ -59,6 +59,12 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## Formatting is default rustfmt, gated in CI (2026-11-01)
+The code used to align `=`, struct fields and `match` arms by column. Stable rustfmt cannot keep that, and an
+unenforced hand style drifts with every edit, so the maintainer chose the formatter: the whole tree was
+reformatted once (135 diffs) and `cargo fmt --check` now fails CI and `/verify`. No `rustfmt.toml`; defaults only.
+**Re-opened by:** stable rustfmt gaining column alignment.
+
 ## jxl-oxide stays on 0.10 (2026-11-01)
 RUSTSEC-2026-0151 (jxl-grid 0.5: out-of-bounds writes from a crafted JPEG XL) affects 32-bit targets only, and the
 shipped binary is x86_64. The fix needs jxl-oxide 0.12, which compiled with no source changes and passed every
@@ -73,11 +79,6 @@ jxl-oxide release that makes reconstruction optional.
 
 Raised by the 2026-10-31 baseline setup. Each needs the maintainer's call; none is settled.
 
-- **rustfmt.** `cargo fmt --check` reports 104 diffs on the current tree, mostly because the code aligns `=`,
-  struct fields and `match` arms by column, and stable rustfmt cannot keep that alignment. Either adopt rustfmt
-  and lose the alignment, or keep the hand style and leave formatting unenforced. Until decided, `/verify` reports
-  the count and does not gate on it. *Recommendation: adopt rustfmt* — the alignment is real readability, but an
-  unenforced style drifts with every edit, and a formatter removes a whole class of review comment.
 - **The codebase guide PDF.** `DevoidViewer_Codebase_Guide.pdf` cannot be grepped or diffed and has needed
   repeated "updated the pdf" commits. *Recommendation:* move anything it says that the code and these docs do not
   into Markdown here, then delete it.

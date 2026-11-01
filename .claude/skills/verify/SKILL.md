@@ -59,10 +59,11 @@ Sum the `test result:` lines — there is one per test binary.
 ## 4. Formatter
 
 ```powershell
-cargo fmt --check *> "$env:TEMP\dv-fmt.txt"; (Select-String -Path "$env:TEMP\dv-fmt.txt" -Pattern '^Diff in').Count
+cargo fmt --check *> "$env:TEMP\dv-fmt.txt"; "exit=$LASTEXITCODE"; (Select-String -Path "$env:TEMP\dv-fmt.txt" -Pattern '^Diff in').Count
 ```
 
-**Report only, not a gate**, until the rustfmt open decision in `docs/settled-decisions.md` is taken.
+**A gate**: the count must be 0, and CI fails on any diff. Run `cargo fmt` to fix rather than hand-aligning —
+the project uses default rustfmt style (`docs/settled-decisions.md`).
 
 ## 5. Dependencies
 
