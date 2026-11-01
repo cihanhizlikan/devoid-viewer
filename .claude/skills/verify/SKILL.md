@@ -8,6 +8,10 @@ description: Verify a change before reporting it — build, clippy warning count
 **Report the numbers, not an impression.** One line at the end: build exit, clippy warnings/errors, tests
 passed/failed, fmt diff count.
 
+**CI runs this same recipe** (`.github/workflows/ci.yml`) and is stricter in one way: clippy runs with
+`-D warnings`, so any warning here fails the pull request there. Every cargo call there passes `--locked`. Keep the
+two in step — a change to one is a change to both.
+
 ## 0. Shell and toolchain
 
 Run every cargo command through **PowerShell**, never Git Bash: Git Bash's `/usr/bin/link` shadows the MSVC linker

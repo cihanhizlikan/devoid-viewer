@@ -18,6 +18,9 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 - **Never work on `main`.** Branch off its tip (`feature/<slug>`, `fix/<slug>`, `chore/<slug>`); merging and
   pushing are the maintainer's.
 - **Verify with the `/verify` skill before calling anything green.** Report its numbers, not an impression.
+  CI (`.github/workflows/ci.yml`) runs the same recipe on every push to `main` and every pull request, with clippy
+  at `-D warnings`. **Change both together**: a step added to one and not the other means a local green that CI
+  reds, or the reverse.
 - **Documentation lives in this repository as Markdown**, where it can be grepped, diffed and changed in the same
   commit as the code it describes. `DevoidViewer_Codebase_Guide.pdf` is not the reference — see the open decision.
 

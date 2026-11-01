@@ -1,0 +1,67 @@
+# The /verify recipe, run by GitHub on every push to main and every pull
+# request, so a change is checked whether or not a session remembered to.
+# Windows only: the product is Windows-native, and windows-latest ships the
+# MSVC linker and Windows SDK the build needs.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts are useless in a fresh runner and bloat the cache.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup reads rust-toolchain.toml and installs the pinned version
+      # with clippy and rustfmt; no third-party toolchain action needed.
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # --locked: fail if Cargo.lock is out of date rather than quietly
+      # resolving different versions than the ones committed.
+      - name: Build
+        run: cargo build --all-targets --locked
+
+      # -D warnings makes the measured zero a gate. disallowed_methods is
+      # already deny in Cargo.toml.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      # Report only until the rustfmt open decision in
+      # docs/settled-decisions.md is taken.
+      - name: Formatter (report only)
+        shell: pwsh
+        run: |
+          $diffs = (cargo fmt --check 2>&1 | Select-String '^Diff in').Count
+          if ($diffs -gt 0) { "::warning::cargo fmt --check reports $diffs diffs (not gated)" }
+          else { "cargo fmt --check: clean" }
