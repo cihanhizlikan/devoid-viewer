@@ -75,3 +75,7 @@ UI rendered by GDI instead, same session:
 
 Binary size: 3,607,040 bytes, +7,680 over `d5b8fdd` and 1,536 smaller than the bitmap-font version. Linking
 `gdi32.dll` costs no measurable startup: `user32.dll`, which the viewer already loads, loads it too.
+
+Dimming the whole window instead of a panel (same day) leaves startup untouched, since nothing runs until H. A
+redraw with the overlay shown costs 3.0 ms on a 3840×2160 buffer at 150 % DPI (release, mean of 20 frames,
+masks already rendered). Binary: 3,606,528 bytes.

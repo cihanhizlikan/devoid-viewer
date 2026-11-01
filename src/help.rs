@@ -1,7 +1,8 @@
 //! The key-bindings overlay that `H` toggles.
 //!
-//! Drawn into the softbuffer frame after the image: a dimmed panel with text
-//! in Segoe UI, rendered by Windows (`win32::render_text`) and blended in.
+//! Drawn into the softbuffer frame after the image: the whole window dimmed,
+//! with the table centred on it in Segoe UI, rendered by Windows
+//! (`win32::render_text`) and blended in.
 //! Nothing is rendered until the overlay is first shown, and it is rendered
 //! again only when the size it needs changes.
 
@@ -69,8 +70,9 @@ impl Help {
     }
 }
 
-/// Padding, column gap, space under the title and line pitch, in proportion
-/// to the em so the panel looks the same at every size.
+/// Margin kept clear around the text, column gap, space under the title and
+/// line pitch, in proportion to the em so the table looks the same at every
+/// size.
 struct Spacing {
     pad: u32,
     gap: u32,
@@ -144,12 +146,12 @@ impl Rendered {
         let x0 = win_w.saturating_sub(self.width) / 2;
         let y0 = win_h.saturating_sub(self.height) / 2;
 
-        // Quarter brightness keeps the image recognisable behind the text.
-        for y in y0..(y0 + self.height).min(win_h) {
-            let row = (y * win_w) as usize;
-            for px in &mut buf[row + x0 as usize..row + (x0 + self.width).min(win_w) as usize] {
-                *px = (*px >> 2) & 0x003F_3F3F;
-            }
+        // The whole window at quarter brightness, with no panel: no edge to
+        // catch the eye, the image still recognisable behind the text. Where
+        // the image is pure white it dims to #3F3F3F, under which the grey
+        // action text still has a WCAG contrast of 5.8:1 (white keys 10.5:1).
+        for px in buf.iter_mut() {
+            *px = (*px >> 2) & 0x003F_3F3F;
         }
 
         let s = Spacing::new(self.px, self.rows[0].0.height);
@@ -227,18 +229,15 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_is_drawn_full_size_where_it_fits() {
+    fn the_table_is_drawn_full_size_over_a_dimmed_window() {
         let (w, h) = (1600, 1000);
         let mut buf = vec![0x00FF_FFFF; (w * h) as usize];
         let mut help = Help::default();
         help.draw(&mut buf, w, h, 1.0);
         assert_eq!(help.rendered.as_ref().expect("rendered").px, 15);
         assert!(buf.contains(&KEY_COLOUR), "text");
-        assert!(
-            buf.contains(&0x003F_3F3F),
-            "the panel dims what is under it"
-        );
-        assert_eq!(buf[0], 0x00FF_FFFF, "the corner is outside the panel");
+        assert_eq!(buf[0], 0x003F_3F3F, "corners are dimmed too");
+        assert_eq!(buf[buf.len() - 1], 0x003F_3F3F);
     }
 
     #[test]

@@ -83,8 +83,8 @@ and right of it, are filled with `slice::fill`. `1 / scale` is computed once per
 short-circuits fully opaque and fully transparent pixels. Sampling is nearest-neighbour, and small images are
 enlarged to fill the window.
 
-The `H` help overlay (`help.rs`) is drawn into the same buffer after the image: a panel at quarter brightness
-with text in Segoe UI, which GDI renders greyscale-antialiased into a mask (`win32::render_text`) that is blended
+The `H` help overlay (`help.rs`) is drawn into the same buffer after the image: the whole window at quarter
+brightness, no panel, with the table centred on it in Segoe UI, which GDI renders greyscale-antialiased into a mask (`win32::render_text`) that is blended
 in. The em is 15 px times the DPI scale, smaller if the window cannot fit the panel. It costs nothing until it
 is shown, and the masks are kept until the size they need changes. Keys
 are matched by physical position (`KeyCode`), so letter keys ignore layout and Caps Lock.
