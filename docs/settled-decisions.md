@@ -45,19 +45,20 @@ the shell's `IFileOperation` with `FOF_ALLOWUNDO`; where a volume has no Recycle
 destroying the file. **A crate, not our own COM calls**, because the maintainer wants safe Rust wherever a
 maintained crate offers it. `trash` canonicalizes the parent directory internally and converts the verbatim path
 back before handing it to the shell, so it does not reintroduce the `\\?\` problem above. Its one internal
-`unwrap` (COM instantiation) is caught with `catch_unwind` so `deleting` cannot stick.
+`unwrap` (COM instantiation) used to be caught with `catch_unwind` so `deleting` could not stick; since release
+builds abort on panic (below), a panic there ends the process instead and is logged by Windows.
 
 ## Files are sorted the way Explorer sorts them (2026-10-31)
 `StrCmpLogicalW` — the comparison behind Explorer's default name order: numeric runs by value, case-insensitive,
 locale-aware. The previous hand-written natural sort compared by code point, so `élan` sorted after `zebra`.
-**This is the one place `unsafe` was added**, and it is the case the maintainer allows: a Win32 call no
-reimplementation can match, since the ordering depends on the user's locale. One call, inside a safe function,
-with a `SAFETY` comment. The old natural sort stays as the non-Windows fallback.
+It is the case the maintainer allows `unsafe` for: a Win32 call no reimplementation can match, since the
+ordering depends on the user's locale. One call, inside a safe function in `src/win32.rs` (see *`unsafe` lives
+only in `src/win32.rs`*), with a `SAFETY` comment. The old natural sort stays as the non-Windows fallback.
 
 ## Logging: none
 The minimalist goal rules out a logging framework, and the user-facing errors already reach a dialog. Unusual
-failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
-decision below.
+failures reach the Event Log through Windows itself rather than code of ours — see *Release builds abort on
+panic* below.
 
 ## Message boxes never run inside a winit callback (2026-11-01)
 A message box runs a modal message loop. Inside a winit 0.29 callback, that loop receives the viewer's `WM_PAINT`,
@@ -110,6 +111,17 @@ test, but grew the release binary by 323,584 bytes (+7%, 4,607,488 → 4,931,072
 reconstruction (`jxl-jbr`, `brotli-decompressor`), and no feature turns it off. The advisory is ignored in
 `deny.toml` with this reason. **Re-opened by:** a 32-bit build shipping, a jxl advisory that reaches 64-bit, or a
 jxl-oxide release that makes reconstruction optional.
+
+## Help is an overlay, not a pop-up window (2026-11-01)
+`H` draws the key table into the viewer's own frame: the whole window dimmed to quarter brightness, the table
+centred on it in Segoe UI, no panel. A pop-up was weighed and rejected: it takes focus, so the arrows, F and Q
+stop working until it is dismissed; a message box cannot align the two columns; and a custom window needs far more
+Win32 code. Its one advantage, that Narrator can read it, was set aside. The text is Segoe UI rendered by GDI
+(`win32::render_text`), not an embedded font: the first version's 8×8 bitmap font was too pixelated to read, and
+an embedded TrueType font with a rasteriser crate would add an estimated 100–300 KB. Segoe ships with Windows.
+Evidence and costs are in `docs/benchmarks.md` and the `feat(help)` commit bodies. **Re-opened by:** a
+screen-reader requirement, which a message box shown alongside the overlay would meet more cheaply than replacing
+it.
 
 ---
 
