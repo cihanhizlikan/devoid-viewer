@@ -37,6 +37,16 @@ consecutive runs agreed within 1 ms.
 
 Binary size: `DevoidViewer.exe` is 4,607,488 bytes.
 
+### After `panic = "abort"` — 2026-11-01
+
+| Case | Visible ms (median) | Visible ms (min) | Working set MB | Peak WS MB | Private MB |
+|---|---:|---:|---:|---:|---:|
+| No image (empty window) | 49.6 | 45.9 | 18.2 | 18.2 | 5.5 |
+| PNG 1920×1080 | 82.2 | 72.9 | 31.5 | 31.5 | 18.5 |
+| JPEG 4000×3000 (12 MP) | 141.6 | 137.7 | 67.6 | 100.6 | 54.7 |
+
+Binary size: 3,595,776 bytes (−1,013,248, −22%). Startup and memory are unchanged within run-to-run noise.
+
 The 12 MP JPEG peaks 33 MB above where it settles. A decoded RGB8 copy (36 MB) held alongside its RGBA8
 conversion (48 MB) would explain that, but this is a candidate, not a measurement; confirm it before changing
 the decode path.

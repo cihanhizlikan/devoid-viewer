@@ -66,6 +66,11 @@ opt-level     = 3
 lto           = "thin"
 codegen-units = 1
 strip         = true
+# A panic ends the process. Windows Error Reporting then records it in the
+# Event Log (Application Error, event 1000) with the faulting module and
+# offset: the Event Log coverage of unusual failures, for no code. Also
+# drops the unwind tables. See docs/settled-decisions.md.
+panic         = "abort"
 
 [profile.dev]
 opt-level = 1

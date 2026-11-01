@@ -522,12 +522,10 @@ impl App {
         let tx = self.msg_tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            // `trash` unwraps a failed COM instantiation internally. Catch
-            // that so a `Deleted` message always arrives and `deleting`
-            // cannot stay stuck at `true`.
-            let result = std::panic::catch_unwind(|| trash::delete(&path))
-                .map_err(|_| "the Recycle Bin is unavailable".to_owned())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            // `trash` unwraps a failed COM instantiation internally. Under
+            // `panic = "abort"` that ends the process, recorded in the Event
+            // Log, rather than leaving `deleting` stuck at `true`.
+            let result = trash::delete(&path).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Deleted { path, result });
             let _ = proxy.send_event(WakeUp);
         });

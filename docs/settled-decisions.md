@@ -59,6 +59,15 @@ The minimalist goal rules out a logging framework, and the user-facing errors al
 failures should reach the Event Log through Windows itself rather than code of ours — see the `panic` open
 decision below.
 
+## Release builds abort on panic (2026-11-01)
+`panic = "abort"` in `[profile.release]`. This is the Event Log coverage the logging decision asks for, with no
+code: a probe panic in a background thread ended the process with `0xC0000409`, and Windows logged Application
+Error event 1000 (faulting module `DevoidViewer.exe`, fault offset) and Windows Error Reporting event 1001. It also
+drops the unwind tables: release binary 4,609,024 → 3,595,776 bytes (−22%), with startup and memory unchanged
+within noise (`docs/benchmarks.md`). The accepted cost: a panic in a decoder or in `trash` now closes the app
+instead of killing one thread, so `request_delete` no longer wraps `trash::delete` in `catch_unwind`. Tests still
+unwind; the setting applies to the release profile only.
+
 ## Formatting is default rustfmt, gated in CI (2026-11-01)
 The code used to align `=`, struct fields and `match` arms by column. Stable rustfmt cannot keep that, and an
 unenforced hand style drifts with every edit, so the maintainer chose the formatter: the whole tree was
@@ -88,11 +97,6 @@ Raised by the 2026-10-31 baseline setup. Each needs the maintainer's call; none 
 - **The codebase guide PDF.** `DevoidViewer_Codebase_Guide.pdf` cannot be grepped or diffed and has needed
   repeated "updated the pdf" commits. *Recommendation:* move anything it says that the code and these docs do not
   into Markdown here, then delete it.
-- **`panic = "abort"` in the release profile.** Windows Error Reporting then records any crash as Application
-  Error event 1000 in the Event Log, with the faulting module and offset — Event Log coverage of the unusual cases
-  for zero code — and the binary drops its unwind tables. The cost: a decoder panic today kills only its thread
-  (and leaves the window waiting); under abort it closes the app, recorded. It also turns the `catch_unwind` in
-  `request_delete` into a no-op. *Recommendation: adopt it.*
 - **`fit_scale` upscales.** Its doc says *"without upscaling"*, but the formula has no `.min(1.0)`, so a small image
   in a maximised window is enlarged (nearest-neighbour). Decide which is intended; the tests deliberately pin
   neither.
