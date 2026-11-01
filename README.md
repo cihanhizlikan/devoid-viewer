@@ -15,6 +15,25 @@ It's the deliberately minimal counterpart to [patina](https://github.com/cihanhi
 - **Windows-native** — built specifically for a smooth Windows experience
 - **View-only focus** — does one job, and stays out of your way
 
+## Keys
+Press **H** in the viewer to show this table over the image; **H** or **Esc** hides it. Letter keys work whatever
+the keyboard layout or Caps Lock state.
+
+| Key | Action |
+|---|---|
+| Right · Down · PgDn | Next image |
+| Left · Up · PgUp | Previous image |
+| Mouse wheel | Next / previous image |
+| Delete | Move to the Recycle Bin |
+| F or F11 | Fullscreen on / off |
+| Esc | Close help, leave fullscreen |
+| Double-click | Maximise / restore |
+| Drop a file | Open it |
+| H | Show / hide this help |
+| Q | Quit |
+
+On laptops whose top row defaults to media and hotkeys, F11 needs **Fn**; **F** works either way.
+
 ## Tech stack
 Rust · Windows
 

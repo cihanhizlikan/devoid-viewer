@@ -50,3 +50,16 @@ Binary size: 3,595,776 bytes (−1,013,248, −22%). Startup and memory are unch
 The 12 MP JPEG peaks 33 MB above where it settles. A decoded RGB8 copy (36 MB) held alongside its RGBA8
 conversion (48 MB) would explain that, but this is a candidate, not a measurement; confirm it before changing
 the decode path.
+
+### `H` help overlay — 2026-11-01
+
+Before (`d5b8fdd`) and after, same session, 15 runs per case.
+
+| Case | Visible ms (median) before → after | Visible ms (min) before → after | Working set MB | Private MB |
+|---|---:|---:|---:|---:|
+| No image (empty window) | 51.1 → 50.6 | 45.9 → 44.7 | 18.3 → 18.3 | 5.5 → 5.5 |
+| PNG 1920×1080 | 89.7 → 87.7 | 79.9 → 82.8 | 31.6 → 31.6 | 18.6 → 18.6 |
+| JPEG 4000×3000 (12 MP) | 151.2 → 156.5 | 143.8 → 144.1 | 67.6 → 67.6 | 54.7 → 54.7 |
+
+Binary size: 3,599,360 → 3,608,576 bytes (+9,216). The overlay adds no startup work (it runs only when shown);
+the time differences are within run-to-run noise, and memory is identical.

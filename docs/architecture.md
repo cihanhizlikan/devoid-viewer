@@ -83,6 +83,11 @@ and right of it, are filled with `slice::fill`. `1 / scale` is computed once per
 short-circuits fully opaque and fully transparent pixels. Sampling is nearest-neighbour, and small images are
 enlarged to fill the window.
 
+The `H` help overlay (`help.rs`) is drawn into the same buffer after the image: a panel at quarter brightness
+with text from an embedded public-domain 8×8 font (95 printable ASCII glyphs, 760 bytes), scaled by a whole
+number, twice the DPI scale and smaller if the window cannot fit it. It costs nothing until it is shown. Keys
+are matched by physical position (`KeyCode`), so letter keys ignore layout and Caps Lock.
+
 ## Known limitations
 
 - No status bar: the title shows the file name only, not index or dimensions.

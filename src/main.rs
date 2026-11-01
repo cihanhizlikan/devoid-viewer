@@ -17,6 +17,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod help;
 mod loader;
 mod nav;
 #[cfg(windows)]
@@ -185,6 +186,8 @@ struct App {
     fullscreen: bool,
     /// Timestamp of the last left-click, for double-click detection.
     last_click: Option<Instant>,
+    /// True while the key-bindings overlay (`H`) is drawn over the image.
+    show_help: bool,
 
     // ── Directory watching ────────────────────────────────────────────────────
     /// Active filesystem watcher for the current directory.
@@ -216,6 +219,7 @@ impl App {
             maximized: false,
             fullscreen: false,
             last_click: None,
+            show_help: false,
             dir_watcher: None,
             watched_dir: None,
         }
@@ -1202,8 +1206,16 @@ fn main() {
                             app.toggle_fullscreen(&window);
                             window.request_redraw();
                         }
+                        KeyCode::KeyH => {
+                            app.show_help = !app.show_help;
+                            window.request_redraw();
+                        }
+                        // One Esc closes the help first, a second leaves fullscreen.
                         KeyCode::Escape => {
-                            if app.exit_fullscreen(&window) {
+                            if app.show_help {
+                                app.show_help = false;
+                                window.request_redraw();
+                            } else if app.exit_fullscreen(&window) {
                                 window.request_redraw();
                             }
                         }
@@ -1231,6 +1243,9 @@ fn main() {
                             return;
                         };
                         render(&mut buf, win_w, win_h, app.view());
+                        if app.show_help {
+                            help::draw(&mut buf, win_w, win_h, window.scale_factor());
+                        }
                         // Nothing to recover: the next RedrawRequested repaints.
                         let _ = buf.present();
                     }
