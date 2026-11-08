@@ -861,20 +861,27 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
 /// - `5.png` + `"jpg"` → `5.jpg`          (if `5.jpg` does not exist)
 /// - `5.png` + `"jpg"` → `5 (1).jpg`      (if `5.jpg` already exists)
 /// - `5.png` + `"jpg"` → `5 (2).jpg`      (if `5.jpg` and `5 (1).jpg` exist)
+///
+/// The stem stays an `OsStr`: a Windows name need not be valid Unicode, and a
+/// lossy conversion would rename the file to something else.
 fn unique_rename_target(path: &Path, ext: &str) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let stem = path.file_stem().unwrap_or_default();
     let parent = path.parent().unwrap_or(Path::new(""));
+    let named = |suffix: &str| {
+        let mut name = stem.to_os_string();
+        name.push(suffix);
+        name.push(".");
+        name.push(ext);
+        parent.join(name)
+    };
 
-    let candidate = parent.join(format!("{stem}.{ext}"));
+    let candidate = named("");
     if !candidate.exists() {
         return candidate;
     }
 
     for n in 1u32.. {
-        let candidate = parent.join(format!("{stem} ({n}).{ext}"));
+        let candidate = named(&format!(" ({n})"));
         if !candidate.exists() {
             return candidate;
         }
@@ -1392,6 +1399,20 @@ mod tests {
             unique_rename_target(&file, "jpg"),
             dir.path().join("5 (2).jpg")
         );
+    }
+
+    /// A lone surrogate is a legal Windows file name and not valid Unicode.
+    #[cfg(windows)]
+    #[test]
+    fn rename_target_keeps_a_name_that_is_not_unicode() {
+        use std::os::windows::ffi::OsStringExt;
+        let dir = tempfile::tempdir().unwrap();
+        let stem = std::ffi::OsString::from_wide(&[0xD800, u16::from(b'a')]);
+        let mut name = stem.clone();
+        name.push(".png");
+        let target = unique_rename_target(&dir.path().join(name), "jpg");
+        assert_eq!(target.file_stem(), Some(stem.as_os_str()));
+        assert_eq!(target.extension(), Some("jpg".as_ref()));
     }
 
     // ── Conventions ───────────────────────────────────────────────────────────
