@@ -23,7 +23,7 @@ is a row here saying so, never a promise in a conversation.
 
 ### Sweep 2026-11-08
 
-1. **The two writes to the user's files have no test that reads the disk afterwards.**
+1. ~~**The two writes to the user's files have no test that reads the disk afterwards.**~~ Done 2026-11-08 (`fix/user-file-writes`): `rename_to_free_name` and `recycle` split from their dialogs; the rename test reads the folder back, the Recycle Bin test is `#[ignore]`d (maintainer's choice).
    - *What*: the wrong-extension rename (`offer_rename`, `src/main.rs:822`, `std::fs::rename` at :843) and the
      delete (`request_delete`, `src/main.rs:535`, `trash::delete` at :548) are tested only around the edges:
      `unique_rename_target` picks the name, nothing checks that the file then has it, and nothing tests the delete.
@@ -104,7 +104,7 @@ is a row here saying so, never a promise in a conversation.
      crafted file is worse than refusing an image of over a gigapixel.
    - *What would falsify it*: a real user image over 32,768 px per side that opened before.
    - *Origin*: sweep 2026-11-08 step 6, committed on `refs/heads/sweep-6-size-cap`.
-8. **The wrong-extension rename can overwrite a file created while its dialog is open.**
+8. ~~**The wrong-extension rename can overwrite a file created while its dialog is open.**~~ Done 2026-11-08 (`fix/user-file-writes`): the free name is picked again after the dialog; the race is narrowed, not closed.
    - *What*: `offer_rename` (`src/main.rs:822`) picks a free name with `unique_rename_target`, shows a blocking
      *Rename?* box, then calls `std::fs::rename`, which on Windows replaces an existing target. A file given that
      name while the box is open, by a sync client or a download, is overwritten without a word.

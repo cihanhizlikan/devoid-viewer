@@ -542,10 +542,7 @@ impl App {
             if !confirm_delete_dialog(&filename) {
                 return Some(Msg::DeleteCancelled);
             }
-            // `trash` unwraps a failed COM instantiation internally. Under
-            // `panic = "abort"` that ends the process, recorded in the Event
-            // Log, rather than leaving `deleting` stuck at `true`.
-            let result = trash::delete(&path).map_err(|e| e.to_string());
+            let result = recycle(&path);
             Some(Msg::Deleted { path, result })
         });
     }
@@ -840,8 +837,8 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
             new_path.display()
         );
         if win32::ask_yes_no(&prompt, "Wrong Extension", win32::Ask::Question) {
-            match std::fs::rename(path, &new_path) {
-                Ok(()) => return Some(new_path),
+            match rename_to_free_name(path, correct_ext) {
+                Ok(renamed) => return Some(renamed),
                 Err(e) => win32::show_error(&format!("Could not rename file:\n{e}"), APP_NAME),
             }
         }
@@ -852,6 +849,29 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Rename `path` to the first free name with extension `ext`, and return it.
+///
+/// The name is picked again here, after the confirmation box has closed,
+/// rather than reused from the prompt: `std::fs::rename` replaces an existing
+/// target on Windows, so a file given the prompted name while the box was
+/// open (by a sync client, a download) would otherwise be overwritten. This
+/// narrows that window to the gap between the check and the rename; closing
+/// it needs a no-replace move, which std does not offer.
+fn rename_to_free_name(path: &Path, ext: &str) -> std::io::Result<PathBuf> {
+    let target = unique_rename_target(path, ext);
+    std::fs::rename(path, &target)?;
+    Ok(target)
+}
+
+/// Move `path` to the Recycle Bin, so a mistaken Delete is undoable.
+///
+/// `trash` unwraps a failed COM instantiation internally. Under
+/// `panic = "abort"` that ends the process, recorded in the Event Log, rather
+/// than leaving the viewer's `deleting` flag stuck at `true`.
+fn recycle(path: &Path) -> Result<(), String> {
+    trash::delete(path).map_err(|e| e.to_string())
 }
 
 /// Return a path that does not yet exist by appending ` (n)` before the
@@ -1399,6 +1419,38 @@ mod tests {
             unique_rename_target(&file, "jpg"),
             dir.path().join("5 (2).jpg")
         );
+    }
+
+    /// What is on disk after the wrong-extension rename: the file under its
+    /// new name with the same bytes, nothing left under the old one, and a
+    /// file that took the prompted name meanwhile still intact.
+    #[test]
+    fn rename_moves_the_file_and_never_replaces_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("5.png");
+        std::fs::write(&file, b"jpeg bytes").unwrap();
+        // Created after the prompt picked `5.jpg`, before the user said yes.
+        let late = dir.path().join("5.jpg");
+        std::fs::write(&late, b"someone else's").unwrap();
+
+        let renamed = rename_to_free_name(&file, "jpg").unwrap();
+
+        assert_eq!(renamed, dir.path().join("5 (1).jpg"));
+        assert!(!file.exists(), "old name still on disk");
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"jpeg bytes");
+        assert_eq!(std::fs::read(&late).unwrap(), b"someone else's");
+    }
+
+    /// Sends a scratch file to the real Recycle Bin of whoever runs it, so it
+    /// is not part of the default run: `cargo test -- --ignored`.
+    #[test]
+    #[ignore = "writes to the Recycle Bin"]
+    fn recycle_removes_the_file_from_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("devoid-viewer recycle test.png");
+        std::fs::write(&file, b"x").unwrap();
+        recycle(&file).unwrap();
+        assert!(!file.exists());
     }
 
     /// A lone surrogate is a legal Windows file name and not valid Unicode.

@@ -205,7 +205,7 @@ regression turn this red?* Over `profile:test_sources`.
 - **Load-sensitive tests** — run the WHOLE suite at least three times; any test that fails once is captured by name
   and run alone ten times. Passes alone, fails under load → a timing assumption, handed over with its message. The
   tempdir tests in `src/nav.rs` and `src/loader.rs` are the likeliest shape; the directory watcher has no test.
-- **The ignored set** — `#[ignore]` against `profile:baseline_ignored` (0). Any one is a finding.
+- **The ignored set** — `#[ignore]` against `profile:baseline_ignored` (1, named there). A second is a finding, and so is the named one if its reason stops being true.
 - **A write to the user's files with no test reading the disk afterwards** — rename and Recycle Bin delete
   (`CLAUDE.md`).
 - **Uncovered production code** — `profile:coverage_command`; `none` → UNAVAILABLE. **Prove it LIVE by checking the

@@ -59,8 +59,8 @@ Select-String -Path "$env:TEMP\dv-test.txt" -Pattern '^test result:'
 Select-String -Path "$env:TEMP\dv-test.txt" -Pattern '^test .* FAILED$|^---- .* stdout ----'
 ```
 
-Sum the `test result:` lines — there is one per test binary. **`profile:baseline_ignored` is 0**; any ignored test
-is a finding.
+Sum the `test result:` lines — there is one per test binary. **`profile:baseline_ignored` is 1**, named in the profile; a second ignored
+test is a finding.
 
 **Capture to a file and grep the failure lines; never pipe the run straight to a tail.** The summary says how many
 failed and never which, and an intermittent failure you cannot name is one you cannot fix. **Record the failing

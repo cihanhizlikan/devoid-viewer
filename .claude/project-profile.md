@@ -62,7 +62,7 @@ that every path below still resolves.
 |---|---|
 | `shell` | **PowerShell for every cargo command**, never Git Bash (its `/usr/bin/link` shadows the MSVC linker), with `$env:PATH = "$HOME\.cargo\bin;$env:PATH"` |
 | `secrets_file` | none |
-| `baseline_ignored` | **0** — no `#[ignore]` test (2026-11-08); timing probes are written, run and removed in the same package |
+| `baseline_ignored` | **1** — `recycle_removes_the_file_from_its_folder` (`src/main.rs`; it writes to the Recycle Bin, run with `cargo test -- --ignored`, maintainer's choice 2026-11-08). Timing probes are written, run and removed in the same package |
 | `warning_baseline` | **0** clippy warnings, any target; CI enforces it with `-D warnings` |
 | `ci` | `.github/workflows/ci.yml`: the `/wp-verify` recipe on `windows-latest` (every cargo call `--locked`, clippy `-D warnings`) and `cargo deny --locked check` on `ubuntu-latest`, on every push to `main`, every pull request and weekly. Changes together with `/wp-verify` |
 | `coverage_command` | none — `cargo-llvm-cov` is not installed (2026-11-08); never installed by an unattended run |
