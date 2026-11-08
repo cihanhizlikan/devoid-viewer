@@ -81,7 +81,7 @@ is a row here saying so, never a promise in a conversation.
      and an untested sort. The other option is a `cargo check --target x86_64-unknown-linux-gnu` job in CI.
    - *What would falsify it*: a plan to ship on another platform.
    - *Origin*: sweep 2026-11-08 step 4, not yet committed to build.
-6. **Merge `sweep-6-rename-stem`?** The rename fix is built, verified and committed (`833ff7d`), but not merged.
+6. ~~**Merge `sweep-6-rename-stem`?**~~ Done 2026-11-08: merged at the maintainer's word (`833ff7d`).
    - *What*: `unique_rename_target` (`src/main.rs:864`) builds the new name with `to_string_lossy`, so a stem that
      is not valid Unicode (a lone surrogate, legal on NTFS) is renamed to `U+FFFD…` along with the extension fix.
      The branch builds it as an `OsString`, with a test that fails without the fix.
@@ -91,7 +91,7 @@ is a row here saying so, never a promise in a conversation.
      to a name they did not choose.
    - *What would falsify it*: a rule that the exe never grows, whatever the fix.
    - *Origin*: sweep 2026-11-08 step 6, committed on `refs/heads/sweep-6-rename-stem`.
-7. **Merge `sweep-6-size-cap`?** A crafted file can abort the viewer. The fix is built, verified and committed
+7. ~~**Merge `sweep-6-size-cap`?**~~ Done 2026-11-08: merged at the maintainer's word (`81cc6c3`). Before it, a crafted file could abort the viewer. The fix was built, verified and committed
    (`81cc6c3`), but not merged.
    - *What*: only `decode_jxl` had a size cap, and it ran after `render_frame` had allocated the frame. A
      118-byte BMP claiming 60,000 × 60,000 px made `decode_to_rgba8` allocate 14 GB, and a GIF claiming a
