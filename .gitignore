@@ -14,7 +14,3 @@
 # Windows specific
 Thumbs.db
 Desktop.ini
-
-# WiX Toolset temporary build artifacts
-*.wixobj
-*.wixpdb
