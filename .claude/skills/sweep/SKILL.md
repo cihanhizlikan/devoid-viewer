@@ -204,7 +204,7 @@ regression turn this red?* Over `profile:test_sources`.
 - **A name that no longer describes the body** — the tell for a test edited until it passed.
 - **Load-sensitive tests** — run the WHOLE suite at least three times; any test that fails once is captured by name
   and run alone ten times. Passes alone, fails under load → a timing assumption, handed over with its message. The
-  directory-watcher tests are the likeliest shape.
+  tempdir tests in `src/nav.rs` and `src/loader.rs` are the likeliest shape; the directory watcher has no test.
 - **The ignored set** — `#[ignore]` against `profile:baseline_ignored` (0). Any one is a finding.
 - **A write to the user's files with no test reading the disk afterwards** — rename and Recycle Bin delete
   (`CLAUDE.md`).
@@ -316,7 +316,10 @@ comment that STATES a number a tool computes is a cached derived value**: remove
   (`git check-ignore -q <path>`) — expected; **deleted on purpose and named as history** — the sentence says so;
   **relative to a folder the sentence names** — resolve it there; a bare module name (`nav.rs`) resolves under
   `src/` before it counts as a miss. What is left is drift, and the fix is the path it
-  moved to (`git log --follow --diff-filter=R`). The count of misses is never the finding.
+  moved to (`git log --follow --diff-filter=R`). The count of misses is never the finding. **Run the check from
+  PowerShell** (`[regex]::Matches` over each file, then `Test-Path`): in Git Bash, `${p//\\//}` deletes every `/`
+  rather than turning `\` into `/`, and the tool layer mangles a `sed` backslash, so the first run of sweep
+  2026-11-08 reported `src/main.rs` missing. A miss on a file that plainly exists is the instrument, not drift.
 - **Claims of STATE**: a sentence saying a thing "is off", "is not split yet", "about 60 lines", a size in bytes, a
   benchmark number, or a count. Read each against what decides it. **A claim decays by being OVERTAKEN, not
   contradicted.**
