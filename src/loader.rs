@@ -508,6 +508,30 @@ mod tests {
         assert!(!is_supported(Path::new("png")));
     }
 
+    /// The README's *Formats* table names every extension we open, and none
+    /// we cannot: the section's backticked `.ext` tokens, as a set.
+    #[test]
+    fn the_readme_formats_table_lists_exactly_the_supported_extensions() {
+        let readme = include_str!("../README.md");
+        let start = readme
+            .find("## Formats")
+            .expect("README.md has no Formats section");
+        let section = &readme[start + 2..];
+        let section = &section[..section.find("\n## ").unwrap_or(section.len())];
+        let mut listed: Vec<&str> = section
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter_map(|code| code.strip_prefix('.'))
+            .filter(|ext| ext.bytes().all(|b| b.is_ascii_lowercase()))
+            .collect();
+        listed.sort_unstable();
+        listed.dedup();
+        let mut supported = SUPPORTED_EXTENSIONS.to_vec();
+        supported.sort_unstable();
+        assert_eq!(listed, supported);
+    }
+
     /// The installer registers file associations by hand; every format we
     /// open must be offered there, and nothing we cannot open.
     #[test]

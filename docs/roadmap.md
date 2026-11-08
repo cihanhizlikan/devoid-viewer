@@ -118,7 +118,10 @@ is a row here saying so, never a promise in a conversation.
    - *What would falsify it*: `std::fs::rename` refusing to replace on this Windows build (a test in a tempdir
      settles it).
    - *Origin*: sweep 2026-11-08 step 6, not yet committed to build.
-9. **The README shows a missing image, says nothing on formats or installing, and has an empty License section.**
+9. ~~**The README shows a missing image, says nothing on formats or installing, and has an empty License section.**~~
+   Done 2026-11-08: the image line dropped (maintainer's choice), *Install* and *Formats* added (the second tied to
+   `SUPPORTED_EXTENSIONS` by `the_readme_formats_table_lists_exactly_the_supported_extensions`), the MSVC
+   prerequisite and the installer build in *Building*, and MIT OR Apache-2.0 (`LICENSE-MIT`, `LICENSE-APACHE`).
    - *What*: `README.md:6` embeds `docs/screenshot.png`, which does not exist, so GitHub shows the alt text. The
      README never lists the formats it opens (BMP, PNG, JPEG, GIF including animation, WebP, TIFF, ICO, JPEG XL;
      `SUPPORTED_EXTENSIONS`), never mentions the installer or the wrong-extension rename, and *License* is a

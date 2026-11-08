@@ -33,8 +33,9 @@ allow = [
     "Unicode-3.0",
 ]
 confidence-threshold = 0.9
-# The application itself carries no licence field; it is not published
-# (`publish = false` in Cargo.toml), so it is not checked as a dependency.
+# The application itself (MIT OR Apache-2.0, LICENSE-MIT and LICENSE-APACHE)
+# is not published (`publish = false` in Cargo.toml), so it is not checked
+# as a dependency.
 private = { ignore = true }
 
 [bans]
