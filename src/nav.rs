@@ -189,10 +189,8 @@ fn sort_like_explorer(paths: &mut Vec<PathBuf>) {
 }
 
 /// Null-terminated UTF-16 file name, encoded losslessly from the `OsStr`.
-#[cfg(windows)]
 type SortKey = Vec<u16>;
 
-#[cfg(windows)]
 fn sort_key(path: &Path) -> SortKey {
     use std::os::windows::ffi::OsStrExt;
     path.file_name()
@@ -205,25 +203,8 @@ fn sort_key(path: &Path) -> SortKey {
 /// `StrCmpLogicalW` is the comparison Explorer uses for its default name
 /// sort. Reimplementing it in safe Rust could only approximate it, which is
 /// the bug this replaced.
-#[cfg(windows)]
 fn compare_keys(a: &[u16], b: &[u16]) -> std::cmp::Ordering {
     crate::win32::compare_logical(a, b)
-}
-
-#[cfg(not(windows))]
-type SortKey = String;
-
-#[cfg(not(windows))]
-fn sort_key(path: &Path) -> SortKey {
-    path.file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_lowercase()
-}
-
-#[cfg(not(windows))]
-fn compare_keys(a: &str, b: &str) -> std::cmp::Ordering {
-    human_sort(a, b)
 }
 
 /// Direction for single-step navigation.
@@ -231,51 +212,6 @@ fn compare_keys(a: &str, b: &str) -> std::cmp::Ordering {
 enum Direction {
     Forward,
     Backward,
-}
-
-// ── Human / natural sort (non-Windows fallback) ───────────────────────────────
-//
-// Compares runs of digits numerically so that "img2" < "img10".
-
-#[cfg(not(windows))]
-fn human_sort(a: &str, b: &str) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    let mut ai = a.chars().peekable();
-    let mut bi = b.chars().peekable();
-
-    loop {
-        match (ai.peek().copied(), bi.peek().copied()) {
-            (None, None) => return Ordering::Equal,
-            (None, _) => return Ordering::Less,
-            (_, None) => return Ordering::Greater,
-            (Some(ac), Some(bc)) if ac.is_ascii_digit() && bc.is_ascii_digit() => {
-                let ord = consume_number(&mut ai).cmp(&consume_number(&mut bi));
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-            }
-            (Some(ac), Some(bc)) => {
-                let ord = ac.cmp(&bc);
-                if ord != Ordering::Equal {
-                    return ord;
-                }
-                ai.next();
-                bi.next();
-            }
-        }
-    }
-}
-
-/// Consume and return a run of ASCII digits as a `u64`, saturating on overflow.
-#[cfg(not(windows))]
-fn consume_number(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
-    let mut n = 0u64;
-    while let Some(&c) = iter.peek() {
-        let Some(digit) = c.to_digit(10) else { break };
-        n = n.saturating_mul(10).saturating_add(digit as u64);
-        iter.next();
-    }
-    n
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -344,7 +280,6 @@ mod tests {
 
     /// The disagreement that motivated `StrCmpLogicalW`: by code point `é`
     /// sorts after `z`; Explorer sorts it with `e`.
-    #[cfg(windows)]
     #[test]
     fn accented_letters_sort_with_their_base_letter() {
         let dir = dir_with(&["zebra.png", "\u{e9}lan.png", "eagle.png"]);
@@ -356,21 +291,10 @@ mod tests {
 
     /// Explorer's word sort gives a hyphen almost no weight, so `a-c` sorts
     /// as `ac` (after `ab`); by code point `-` sorts before every letter.
-    #[cfg(windows)]
     #[test]
     fn hyphens_are_ignored_like_explorer() {
         let dir = dir_with(&["a-c.png", "ab.png"]);
         assert_eq!(names(&open(&dir, "ab.png")), ["ab.png", "a-c.png"]);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn human_sort_compares_digit_runs_numerically() {
-        use std::cmp::Ordering::*;
-        assert_eq!(human_sort("img2", "img10"), Less);
-        assert_eq!(human_sort("img10", "img10"), Equal);
-        assert_eq!(human_sort("img", "img1"), Less);
-        assert_eq!(human_sort("99999999999999999999999", "1"), Greater);
     }
 
     // ── Navigation ────────────────────────────────────────────────────────────

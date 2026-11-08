@@ -17,11 +17,15 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-#[cfg(windows)]
+// Windows-only by design (CLAUDE.md): there is no other platform's half to keep
+// in step, so a build anywhere else stops here rather than failing somewhere
+// less clear.
+#[cfg(not(windows))]
+compile_error!("Devoid Viewer is Windows-only");
+
 mod help;
 mod loader;
 mod nav;
-#[cfg(windows)]
 mod win32;
 
 use std::{
@@ -190,7 +194,6 @@ struct App {
     /// True while the key-bindings overlay (`H`) is drawn over the image.
     show_help: bool,
     /// The overlay's rendered text, kept between frames.
-    #[cfg(windows)]
     help: help::Help,
 
     // ── Directory watching ────────────────────────────────────────────────────
@@ -224,7 +227,6 @@ impl App {
             fullscreen: false,
             last_click: None,
             show_help: false,
-            #[cfg(windows)]
             help: help::Help::default(),
             dir_watcher: None,
             watched_dir: None,
@@ -777,30 +779,17 @@ fn render(buf: &mut [u32], win_w: u32, win_h: u32, view: Option<View<'_>>) {
 // callback.
 
 fn confirm_delete_dialog(filename: &str) -> bool {
-    #[cfg(windows)]
-    {
-        win32::ask_yes_no(
-            &format!("Move to the Recycle Bin?\n\n{filename}"),
-            "Delete Image",
-            win32::Ask::Warning,
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = filename;
-        true
-    }
+    win32::ask_yes_no(
+        &format!("Move to the Recycle Bin?\n\n{filename}"),
+        "Delete Image",
+        win32::Ask::Warning,
+    )
 }
 
 /// Show an error box on its own thread and return at once; there is no
 /// answer to wait for.
 fn show_error_dialog(msg: String) {
-    #[cfg(windows)]
     std::thread::spawn(move || win32::show_error(&msg, APP_NAME));
-    #[cfg(not(windows))]
-    {
-        eprintln!("Error: {msg}");
-    }
 }
 
 /// Offer to rename `path` to use `correct_ext`.
@@ -824,7 +813,6 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
 
     let new_path = unique_rename_target(path, correct_ext);
 
-    #[cfg(windows)]
     {
         let current_ext = path
             .extension()
@@ -842,10 +830,6 @@ fn offer_rename(path: &Path, correct_ext: &str) -> Option<PathBuf> {
                 Err(e) => win32::show_error(&format!("Could not rename file:\n{e}"), APP_NAME),
             }
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = new_path;
     }
 
     None
@@ -930,10 +914,9 @@ fn heuristic_work_area(monitor: &winit::monitor::MonitorHandle) -> (i32, i32, i3
 }
 
 /// Usable desktop dimensions in logical pixels.
-/// On Windows uses `SPI_GETWORKAREA` for exact taskbar exclusion.
-/// Elsewhere uses 90% × 85% of the monitor size as a conservative heuristic.
+/// `SPI_GETWORKAREA` for exact taskbar exclusion; if that fails, 90% × 85% of
+/// the monitor size as a conservative heuristic.
 fn work_area(window: &Window) -> (f64, f64) {
-    #[cfg(windows)]
     if let Some((l, t, r, b)) = win32::work_area() {
         let sf = current_or_any_monitor(window)
             .map(|m| m.scale_factor())
@@ -976,12 +959,8 @@ fn center_window(window: &Window) {
     };
     let ws = window.outer_size();
 
-    #[cfg(windows)]
     let (wa_left, wa_top, wa_right, wa_bottom) =
         win32::work_area().unwrap_or_else(|| heuristic_work_area(&mon));
-
-    #[cfg(not(windows))]
-    let (wa_left, wa_top, wa_right, wa_bottom) = heuristic_work_area(&mon);
 
     let wa_w = wa_right - wa_left;
     let wa_h = wa_bottom - wa_top;
@@ -1101,7 +1080,6 @@ fn main() {
     let mut el_builder: EventLoopBuilder<WakeUp> = EventLoopBuilder::with_user_event();
 
     // SC_CLOSE re-posted as WM_CLOSE, SC_MAXIMIZE routed to toggle_maximize.
-    #[cfg(windows)]
     win32::install_system_command_hook(&mut el_builder);
 
     let event_loop = el_builder.build().expect("event loop");
@@ -1277,7 +1255,6 @@ fn main() {
                         };
                         render(&mut buf, win_w, win_h, app.view());
                         if app.show_help {
-                            #[cfg(windows)]
                             app.help.draw(&mut buf, win_w, win_h, window.scale_factor());
                         }
                         // Nothing to recover: the next RedrawRequested repaints.
@@ -1454,7 +1431,6 @@ mod tests {
     }
 
     /// A lone surrogate is a legal Windows file name and not valid Unicode.
-    #[cfg(windows)]
     #[test]
     fn rename_target_keeps_a_name_that_is_not_unicode() {
         use std::os::windows::ffi::OsStringExt;

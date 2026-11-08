@@ -152,8 +152,8 @@ are alive. Check each before believing a "no caller" result:
   string inside one), and `build.rs`, which is its own crate and reaches `devoid.ico`.
 - **Reached from the installer**: `devoid_viewer_setup.iss` names the exe, the extensions and the ProgID; tests in
   `src/loader.rs` and `src/main.rs` tie it to the code (`profile:co_located_products`).
-- **Platform-gated code**: a `#[cfg(windows)]` or `#[cfg(not(windows))]` item is compiled on one platform only, so
-  a Windows build is silent about the other half.
+- **Platform-gated code**: none today — Devoid is Windows-only (`compile_error!` elsewhere). A new `#[cfg(...)]`
+  item is compiled on one platform only, so a Windows build is silent about the other half.
 - **Read what the matches ARE, not how many there are**: a doc comment or a context file naming an item pads a
   count without moving the fact.
 
@@ -251,8 +251,8 @@ never compiled:
 - **every `#[allow(dead_code)]`** — a suppression that claims a purpose (*"useful API"*, *"will be needed"*) with
   no production caller is residue claiming a future. Delete the attribute in the step's branch and build: rustc
   names what was hiding behind it;
-- **the other platform's half** — a `#[cfg(not(windows))]` item is never compiled here, so its callers are read,
-  not built. Devoid ships only on Windows; whether each stub still earns its place is a package, not a deletion;
+- **another platform's half** — Devoid is Windows-only (`docs/settled-decisions.md`), so any new
+  `#[cfg(not(windows))]` item is never compiled anywhere and is a finding;
 - **`pub` items at the crate root**, which the lint exempts (none today — re-derive);
 - **Cargo features and dependencies** nothing uses — an `image` feature for a format the loader no longer accepts
   is binary size (`docs/settled-decisions.md`: raster formats only);

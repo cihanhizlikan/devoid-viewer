@@ -69,7 +69,8 @@ is a row here saying so, never a promise in a conversation.
      row 3 in the same package.
    - *What would falsify it*: 0.30 measuring larger or slower to first window than 0.29.
    - *Origin*: sweep 2026-11-08 step 3, not yet committed to build.
-5. **The non-Windows half is code that nothing compiles.**
+5. ~~**The non-Windows half is code that nothing compiles.**~~ Done 2026-11-08: deleted, and a `compile_error!`
+   stops any non-Windows build (`docs/settled-decisions.md`, *Windows only*).
    - *What*: 10 `#[cfg(not(windows))]` sites: the dialog stubs and the work-area fallback in `src/main.rs` (:791,
      :803, :849, :963), and in `src/nav.rs` the `String` sort key, `human_sort`, `consume_number` (:213–:279) and
      their test (:366).

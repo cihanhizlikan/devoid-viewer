@@ -55,7 +55,13 @@ builds abort on panic (below), a panic there ends the process instead and is log
 locale-aware. The previous hand-written natural sort compared by code point, so `élan` sorted after `zebra`.
 It is the case the maintainer allows `unsafe` for: a Win32 call no reimplementation can match, since the
 ordering depends on the user's locale. One call, inside a safe function in `src/win32.rs` (see *`unsafe` lives
-only in `src/win32.rs`*), with a `SAFETY` comment. The old natural sort stays as the non-Windows fallback.
+only in `src/win32.rs`*), with a `SAFETY` comment. The old natural sort was kept as a non-Windows fallback until 2026-11-08 (*Windows only*).
+
+## Windows only (2026-11-08)
+Devoid builds for Windows and nothing else: a `compile_error!` in `src/main.rs` stops any other target. The
+`#[cfg(not(windows))]` half (dialog stubs, a work-area fallback, a code-point natural sort) was deleted, because
+nothing had compiled it since the Win32 work began, so it was a fallback in name only. Re-opened by a plan to
+ship on another platform, together with a CI job that builds there.
 
 ## Logging: none
 The minimalist goal rules out a logging framework, and the user-facing errors already reach a dialog. Unusual

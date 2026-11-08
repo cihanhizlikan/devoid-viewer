@@ -34,7 +34,6 @@ crossbeam-channel = "0.5"
 trash = { version = "5.2", default-features = false, features = ["coinit_apartmentthreaded"] }
 
 # ── Windows API ───────────────────────────────────────────────
-[target.'cfg(windows)'.dependencies]
 # 0.61, the version softbuffer already pulls in, so ours adds no copy.
 windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
