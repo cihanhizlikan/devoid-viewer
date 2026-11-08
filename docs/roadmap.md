@@ -117,3 +117,17 @@ is a row here saying so, never a promise in a conversation.
    - *What would falsify it*: `std::fs::rename` refusing to replace on this Windows build (a test in a tempdir
      settles it).
    - *Origin*: sweep 2026-11-08 step 6, not yet committed to build.
+9. **The README shows a missing image, says nothing on formats or installing, and has an empty License section.**
+   - *What*: `README.md:6` embeds `docs/screenshot.png`, which does not exist, so GitHub shows the alt text. The
+     README never lists the formats it opens (BMP, PNG, JPEG, GIF including animation, WebP, TIFF, ICO, JPEG XL;
+     `SUPPORTED_EXTENSIONS`), never mentions the installer or the wrong-extension rename, and *License* is a
+     placeholder comment. There is no `LICENSE` file and no `license` in `Cargo.toml`.
+   - *Why it is not the obvious thing*: the screenshot and the licence are the maintainer's to supply, and the
+     section order (what it is → install → formats → keys → build) is an editorial choice. The sweep corrected
+     none of it.
+   - *Recommendation*: one `chore/readme` package. Capture the screenshot from the release exe on a bench fixture.
+     Add *Install* (the setup exe, then Settings → Default apps) and *Formats* sections, the second tied to
+     `SUPPORTED_EXTENSIONS` by a test the way the key table is tied to `BINDINGS`. Choose a licence, and add the
+     MSVC Build Tools prerequisite to *Building from source*.
+   - *What would falsify it*: a screenshot or licence kept elsewhere on purpose.
+   - *Origin*: sweep 2026-11-08 step 9, not yet committed to build.
