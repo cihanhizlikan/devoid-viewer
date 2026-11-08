@@ -1,12 +1,22 @@
 ; Devoid Viewer — Inno Setup 7 installer script
 ; Place this file in the project root alongside Cargo.toml.
-; Build with: iscc devoid_viewer_setup.iss
+; Build with: iscc devoid_viewer_setup.iss, after cargo build --release
 ; Output: Output\DevoidViewer_Setup.exe
 
 #define AppName      "Devoid Viewer"
-#define AppVersion   "0.1.0"
-#define AppPublisher "Fatih Cihan Hizlikan"
 #define AppExeName   "DevoidViewer.exe"
+#define AppExePath   AddBackslash(SourcePath) + "target\release\" + AppExeName
+
+; The version is read from the exe it packs, whose version block winres
+; (build.rs) stamps from Cargo.toml's package.version: one source, never typed here.
+#if !FileExists(AppExePath)
+  #error target\release\DevoidViewer.exe is missing: run cargo build --release first
+#endif
+#define AppVersion   GetStringFileInfo(AppExePath, "ProductVersion")
+#if AppVersion == ""
+  #error DevoidViewer.exe carries no ProductVersion: its version block was not embedded
+#endif
+#define AppPublisher "Fatih Cihan Hizlikan"
 #define AppRegName   "DevoidViewer"
 #define AppNameUrl   "Devoid%20Viewer"
 #define AppId        "{{42131F52-0DFF-4B4C-868B-4656FD6F3F89}"

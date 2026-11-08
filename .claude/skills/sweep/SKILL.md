@@ -50,8 +50,9 @@ never taken. A session may propose one, with a reason.
   limit**: a sweep merges work nobody has reviewed, and only the unambiguity bar keeps that honest. Widening the bar
   turns the exception into something it was never granted for.
 - **Nothing is pushed** (`profile:push_policy`): a sweep's request is "audit", not "push".
-- **Nothing is installed** — no cargo tool, no build of the installer run against the machine, no app install. A
-  detector that needs one is UNAVAILABLE.
+- **Nothing is installed** — no cargo tool, no setup exe run, no app install. A detector that needs one is
+  UNAVAILABLE. *Compiling* the installer (`profile:installer_build`) installs nothing and is allowed; running what
+  it produces is not.
 - **Report only at the END**, in one message covering every step. A mid-run progress report is a stop wearing a
   report's clothes.
 
@@ -130,6 +131,9 @@ either it measured nothing to do and says so, or it left work behind.
    at it.
 
    **An inferred zero is not a measurement, and neither is an unexamined non-zero.**
+
+   **The installer compiler is a detector too**: `profile:installer_build` once on `main`, LIVE when it exits 0 and
+   the setup's `ProductVersion` equals `Cargo.toml`'s.
 4. **The footprint baseline.** `profile:benchmark` once, on `main`'s release exe, before step 1 — the numbers every
    later step that touches startup or decoding is compared against. Not idle (another build running) → UNAVAILABLE,
    and step 7's footprint half with it.
@@ -375,6 +379,17 @@ default set")*.
 **Never re-raise a settled decision.** `profile:settled_decisions` carries what earlier work ruled; a ruling is
 re-opened by a new fact, never by an argument. Where a context document and a settled decision disagree, the
 decision is the ruling and the document is step 8's drift.
+
+**The installer moves with the code** (`profile:co_located_products`). Any step whose correction changes something
+`devoid_viewer_setup.iss` encodes — the supported extensions and their association, Open With and Default apps
+lines, the exe name, the ProgID, the version source, a user-facing string it shows, a path it packs — updates the
+script **in the same commit**, under the same unambiguity bar as the code, and closes with `/wp-verify` step 6
+(`profile:installer_build`: compile it, check its `ProductVersion`). A change the script needs that is a POLICY (a
+new task, a per-machine registry choice, anything touching `UserChoice`, see the *installer registers for Default
+apps* settled decision) is a package. **The script is also read for its own drift** in steps 4 (an association
+line for a format the loader refuses, a registry key nothing reads), 8 (its comments and `#error` messages against
+what the code and `build.rs` do) and 9 (its task and finish-page wording). `profile:installer_build` UNAVAILABLE →
+those reads still happen, and the report says the script was not compiled.
 
 **Line endings are `profile:line_endings`.** A scripted edit (PowerShell `Get-Content -Raw`/`Set-Content`) keeps
 each file's OWN endings — read whether it holds CRLF before writing it back, never normalise every file to one. **A

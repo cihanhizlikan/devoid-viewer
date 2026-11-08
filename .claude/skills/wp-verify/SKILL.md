@@ -88,6 +88,22 @@ A gate: the exit must be 0. The duplicate-version warnings are known (`profile:d
 finding. An advisory exception goes in `deny.toml` with its reason and, where it trades against size or startup,
 an entry in `docs/settled-decisions.md`. CI also runs this weekly, since advisories arrive without any change here.
 
+## 6. Installer (when `devoid_viewer_setup.iss`, `build.rs`, the version in `Cargo.toml` or `SUPPORTED_EXTENSIONS` changed)
+
+`profile:installer_build`. The unit tests already tie the script's extensions and version source to the code;
+this proves the script still COMPILES and packs the version the exe carries.
+
+```powershell
+cargo build --release --locked *> $null
+& 'C:\Program Files\Inno Setup 7\ISCC.exe' /Q devoid_viewer_setup.iss *> "$env:TEMP\dv-iscc.txt"; "exit=$LASTEXITCODE"
+(Get-Item Output\DevoidViewer_Setup.exe).VersionInfo.ProductVersion.Trim()   # must equal Cargo.toml's version (Inno pads it)
+```
+
+A gate when it runs: exit 0 and the matching version. **Local only**: CI has no Inno Setup 7, and the tests that
+do run there (`installer_associates_exactly_the_supported_extensions`, `installer_reads_its_version_from_the_exe`)
+are the part CI can check. ISCC missing → report UNAVAILABLE, never green. **Never run the setup exe** it produces:
+installing on the maintainer's machine is theirs to start.
+
 ## Experiments
 
 **Never `git checkout` or `git restore` a file to undo an experiment** — it discards every uncommitted change in

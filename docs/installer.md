@@ -85,5 +85,8 @@ further work unless a user reports it.
   `HwPhotoViewer`, not Photos). The uninstaller cannot pick the fallback; only the user can set a default.
 - `ie4uinit.exe -ClearIconCache` refreshes the shell's icons.
 
-The installer version (`#define AppVersion`) must match `Cargo.toml`; `installer_version_matches_cargo` in
-`main.rs` enforces it.
+The installer has no version of its own: `#define AppVersion` reads `ProductVersion` from
+`target\release\DevoidViewer.exe` (`GetStringFileInfo`), which winres stamps from `Cargo.toml`'s
+`package.version`. So the release exe must be built first, and compiling stops with an error if it is missing or
+carries no version. `installer_reads_its_version_from_the_exe` in `main.rs` keeps a typed version out of the
+script. The mechanism is Patina's (2026-11-08).

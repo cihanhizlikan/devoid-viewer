@@ -1469,15 +1469,24 @@ mod tests {
 
     // ── Conventions ───────────────────────────────────────────────────────────
 
-    /// The installer carries its own copy of the version; it must match Cargo's.
+    /// The installer has no copy of the version to drift: it reads the
+    /// exe's `ProductVersion`, which winres stamps from Cargo.toml.
     #[test]
-    fn installer_version_matches_cargo() {
+    fn installer_reads_its_version_from_the_exe() {
         let iss = include_str!("../devoid_viewer_setup.iss");
         let version = iss
             .lines()
             .find_map(|l| l.strip_prefix("#define AppVersion"))
-            .map(|rest| rest.trim().trim_matches('"'))
+            .map(str::trim)
             .expect("#define AppVersion in devoid_viewer_setup.iss");
-        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            version,
+            r#"GetStringFileInfo(AppExePath, "ProductVersion")"#
+        );
+        assert!(
+            !iss.contains(env!("CARGO_PKG_VERSION")),
+            "the installer types the version {} somewhere",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }

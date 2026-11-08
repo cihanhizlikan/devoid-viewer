@@ -22,7 +22,7 @@ that every path below still resolves.
 | `test_sources` | the `#[cfg(test)] mod tests` inside each `src/*.rs`; there is no `tests/` directory |
 | `fixture_excludes` | none — tests build their images in memory and write them to `tempfile` directories |
 | `host_types` | a winit 0.29 event loop drawing through softbuffer (CPU blit); background work on `std::thread::spawn` threads that report over one bounded `crossbeam_channel` and wake the loop with `WakeUp`; message boxes on their own threads; release builds `panic = "abort"`, so a panic ends the process and Windows logs it (no hook) |
-| `co_located_products` | `devoid_viewer_setup.iss`, the Inno Setup 7 installer, tied to the code by `installer_version_matches_cargo` and `installer_associates_exactly_the_supported_extensions` |
+| `co_located_products` | `devoid_viewer_setup.iss`, the Inno Setup 7 installer, tied to the code by `installer_reads_its_version_from_the_exe` and `installer_associates_exactly_the_supported_extensions`, and compiled by `profile:installer_build` |
 
 ## Conventions the build or suite already enforces
 
@@ -72,6 +72,7 @@ that every path below still resolves.
 | `duplicates_command` | `cargo tree -d --target x86_64-pc-windows-msvc --edges normal` — known and deliberate (2026-11-08): `windows-sys` 0.48 (winit 0.29, notify) beside 0.61, and `raw-window-handle` 0.5 (winit) beside 0.6 |
 | `clean_rebuild` | after every commit: `cargo clean`, then `cargo build --release --locked`; report the exit code and the size of `target\release\DevoidViewer.exe`. A sweep: once, after its last merge |
 | `benchmark` | `scripts\bench.ps1` — time to visible window and memory of the release exe; method and every baseline in `docs/benchmarks.md`. Its numbers are only comparable on an otherwise idle machine (another project's `cargo` build tripled them on 2026-11-01) |
+| `installer_build` | `& 'C:\Program Files\Inno Setup 7\ISCC.exe' /Q devoid_viewer_setup.iss`, after `cargo build --release --locked`: compiles `Output\DevoidViewer_Setup.exe` (gitignored), whose `ProductVersion` must equal `Cargo.toml`'s version. Compiling is not installing: the setup exe is never run by a session unasked. Inno Setup 7.1.1 is on the maintainer's machine; CI has none, so this check is local only. LIVE 2026-11-08: exit 0, 0.2.0 |
 | `push_policy` | a session pushes `main` only when the maintainer's request says so |
 
 ## The surfaces people read

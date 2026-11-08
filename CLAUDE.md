@@ -31,7 +31,11 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
   [.claude/project-profile.md](.claude/project-profile.md), ported from Patina (2026-11-08).
 - **CI (`.github/workflows/ci.yml`) runs the `/wp-verify` recipe** on every push to `main` and every pull request,
   with clippy at `-D warnings`. **Change both together**: a step added to one and not the other means a local green
-  that CI reds, or the reverse.
+  that CI reds, or the reverse. The one local-only step is compiling the installer (`/wp-verify` step 6): CI has no
+  Inno Setup 7, and the tests that tie the script to the code run in both.
+- **The installer moves with the code**: a change to what `devoid_viewer_setup.iss` encodes (extensions, exe name,
+  ProgID, version source, its wording) updates the script in the same commit. Its version is never typed: it is read
+  from the exe, which winres stamps from `Cargo.toml`.
 - **After every commit, rebuild from clean**: `cargo clean`, then `cargo build --release --locked`, and report the
   exit code and `target\release\DevoidViewer.exe` size. The exe on disk is then always a fresh build of the latest
   commit, never a leftover. (`Cargo.toml` and `Cargo.lock` are source, not build output; they are never deleted.)
