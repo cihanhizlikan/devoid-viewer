@@ -20,15 +20,25 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 - **Read [docs/settled-decisions.md](docs/settled-decisions.md) before proposing a change to paths, formats,
   directory listing or window behaviour.** A decision there is re-opened by a new fact, never by an argument.
   Where a change genuinely moves one, revise the entry in the same commit.
+- **[docs/roadmap.md](docs/roadmap.md) is the work queue, in order.** Update it in the commit that lands an item.
+  A check only the maintainer can make is a row there, not a promise in a conversation.
 - **Never work on `main`.** Branch off its tip (`feature/<slug>`, `fix/<slug>`, `chore/<slug>`); merging and
   pushing are the maintainer's.
-- **Verify with the `/verify` skill before calling anything green.** Report its numbers, not an impression.
-  CI (`.github/workflows/ci.yml`) runs the same recipe on every push to `main` and every pull request, with clippy
-  at `-D warnings`. **Change both together**: a step added to one and not the other means a local green that CI
-  reds, or the reverse.
+- **A package runs through three skills**: `/wp-start` before the first edit, `/wp-verify` before calling anything
+  green (report its numbers, not an impression), `/wp-finish` to commit, rebuild and merge. `/sweep` is the
+  unattended audit, started by the maintainer only. Their repository facts are keys in
+  [.claude/project-profile.md](.claude/project-profile.md), ported from Patina (2026-11-08).
+- **CI (`.github/workflows/ci.yml`) runs the `/wp-verify` recipe** on every push to `main` and every pull request,
+  with clippy at `-D warnings`. **Change both together**: a step added to one and not the other means a local green
+  that CI reds, or the reverse.
 - **After every commit, rebuild from clean**: `cargo clean`, then `cargo build --release --locked`, and report the
   exit code and `target\release\DevoidViewer.exe` size. The exe on disk is then always a fresh build of the latest
   commit, never a leftover. (`Cargo.toml` and `Cargo.lock` are source, not build output; they are never deleted.)
+  A `/sweep` rebuilds once, after its last merge, rather than per step (its *Finishing* says why).
+- **Devoid writes to the user's files** — rename, and delete to the Recycle Bin. A change on either path needs a
+  test that shows what is on disk afterwards, not just that the call returned `Ok`.
+- **Nothing is installed or uninstalled on the maintainer's machine unannounced** — the app, a cargo tool, a
+  runtime. Say what and why first.
 - **Documentation lives in this repository as Markdown**, where it can be grepped, diffed and changed in the same
   commit as the code it describes: [docs/architecture.md](docs/architecture.md) for how the pieces fit,
   [docs/installer.md](docs/installer.md) for the Inno Setup script.
@@ -59,5 +69,10 @@ Carried over from the maintainer's other projects:
   also means its cost in binary size and startup time.
 - **Correct a misused technical term** in one clause, then answer the actual question.
 - **Hand over decisions, not inventories.** Triage a lint loop before reporting it; lead with what survives.
-- **Commit bodies are the archive**: what changed, why it was not the obvious thing, and the evidence. Search them
-  with `git log --grep=<term>`.
+- **Commit bodies are the archive**: what changed, why it was not the obvious thing, and the evidence, in about
+  1,500 bytes measured before committing (`/wp-finish`). Search them with `git log --grep=<term>`.
+- **Check the instrument before believing it.** A confident negative is the result to distrust first: read what a
+  search or probe matched, and whether its shape is the case in question, before concluding from how many.
+- **A refusal is not a failure.** When a permission check refuses an action, never re-issue it in another form —
+  narrower, reworded, split, through another tool; that takes the decision the refusal made. Say what was refused
+  and leave it. Retrying an error nobody chose (a locked file, a timeout) is not that.

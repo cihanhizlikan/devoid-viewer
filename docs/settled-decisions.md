@@ -97,7 +97,8 @@ unwind; the setting applies to the release profile only.
 ## Formatting is default rustfmt, gated in CI (2026-11-01)
 The code used to align `=`, struct fields and `match` arms by column. Stable rustfmt cannot keep that, and an
 unenforced hand style drifts with every edit, so the maintainer chose the formatter: the whole tree was
-reformatted once (135 diffs) and `cargo fmt --check` now fails CI and `/verify`. No `rustfmt.toml`; defaults only.
+reformatted once (135 diffs) and `cargo fmt --check` now fails CI and `/wp-verify`. No `rustfmt.toml`; defaults only. The reformat
+commit is listed in `.git-blame-ignore-revs`, so `git blame` skips it.
 **Re-opened by:** stable rustfmt gaining column alignment.
 
 ## `unsafe` lives only in `src/win32.rs` (2026-11-01)

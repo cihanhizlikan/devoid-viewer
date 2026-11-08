@@ -1,4 +1,4 @@
-# The /verify recipe, run by GitHub on every push to main and every pull
+# The /wp-verify recipe, run by GitHub on every push to main and every pull
 # request, so a change is checked whether or not a session remembered to.
 # Windows only: the product is Windows-native, and windows-latest ships the
 # MSVC linker and Windows SDK the build needs.

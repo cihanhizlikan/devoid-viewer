@@ -1,0 +1,8 @@
+# Formatting-only commits, skipped by git blame when configured with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub's blame view reads this file without configuration.
+#
+# style: adopt default rustfmt and gate it in CI — the rustfmt pass over src/ and build.rs (930 lines). It also
+# changed .github/workflows/ci.yml, docs/settled-decisions.md and the verify skill (30 lines); blame those
+# files with --ignore-revs-file /dev/null to see it there.
+8a8fc40a1e30d602c749c518ca2a91779b0776d1
