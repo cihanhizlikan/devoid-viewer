@@ -131,3 +131,21 @@ is a row here saying so, never a promise in a conversation.
      MSVC Build Tools prerequisite to *Building from source*.
    - *What would falsify it*: a screenshot or licence kept elsewhere on purpose.
    - *Origin*: sweep 2026-11-08 step 9, not yet committed to build.
+
+### Sweep 2026-11-08, second run
+
+10. **An image over the size cap is reported as corrupt.**
+    - *What*: opening a BMP that claims 60,000 × 60,000 px shows *"Cannot open image: Failed to decode .bmp
+      file"* (measured with a temporary test calling `load_image`). `check_dimensions` returns *"image too large
+      (W×H); maximum dimension is 32768"*, but `load_image` (`src/loader.rs:96`) drops the decode error when the
+      sniffed format matches the extension and substitutes the generic message at :117. A real stitched panorama
+      over 32,768 px would read as a broken file.
+    - *Why it is not the obvious thing*: the fix needs `load_image` to tell "too large" apart from "corrupt",
+      either by a typed error from the decoders (a new error enum through every path) or by keeping the first
+      error's text. That is a choice about the error shape, and either version adds some bytes.
+    - *Recommendation*: keep the first decode error and show it when the sniffed format matches the extension,
+      since the decoder's own message ("too large", "unexpected end of file") is more useful than the generic
+      line. Re-word the `a_truncated_file_is_unsupported_not_misnamed` assertion to match.
+    - *What would falsify it*: the error dialog not showing `Unsupported`'s text (it does: `src/main.rs`,
+      `drain_messages`, *"Cannot open image:\n{reason}"*).
+    - *Origin*: sweep 2026-11-08 (second run) step 9, not yet committed to build.
