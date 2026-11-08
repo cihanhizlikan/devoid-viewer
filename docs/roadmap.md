@@ -69,3 +69,15 @@ is a row here saying so, never a promise in a conversation.
      row 3 in the same package.
    - *What would falsify it*: 0.30 measuring larger or slower to first window than 0.29.
    - *Origin*: sweep 2026-11-08 step 3, not yet committed to build.
+5. **The non-Windows half is code that nothing compiles.**
+   - *What*: 10 `#[cfg(not(windows))]` sites: the dialog stubs and the work-area fallback in `src/main.rs` (:791,
+     :803, :849, :956), and in `src/nav.rs` the `String` sort key, `human_sort`, `consume_number` (:213–:279) and
+     their test (:366).
+   - *Why it is not the obvious thing*: CI builds only on `windows-latest`, and this machine has only the MSVC
+     target. Nothing has compiled this half since the Windows-only work (`src/win32.rs`, `src/help.rs`, the `trash`
+     COM feature), so it may already fail to build, and a deletion is a decision about the product's platforms.
+   - *Recommendation*: delete it. The product is Windows-native (`CLAUDE.md`), `help` and `win32` are already
+     `cfg(windows)`-only, and a fallback that is never built is not a fallback. `nav.rs` then loses about 60 lines
+     and an untested sort. The other option is a `cargo check --target x86_64-unknown-linux-gnu` job in CI.
+   - *What would falsify it*: a plan to ship on another platform.
+   - *Origin*: sweep 2026-11-08 step 4, not yet committed to build.
