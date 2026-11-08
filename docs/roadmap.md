@@ -71,7 +71,7 @@ is a row here saying so, never a promise in a conversation.
    - *Origin*: sweep 2026-11-08 step 3, not yet committed to build.
 5. **The non-Windows half is code that nothing compiles.**
    - *What*: 10 `#[cfg(not(windows))]` sites: the dialog stubs and the work-area fallback in `src/main.rs` (:791,
-     :803, :849, :956), and in `src/nav.rs` the `String` sort key, `human_sort`, `consume_number` (:213–:279) and
+     :803, :849, :963), and in `src/nav.rs` the `String` sort key, `human_sort`, `consume_number` (:213–:279) and
      their test (:366).
    - *Why it is not the obvious thing*: CI builds only on `windows-latest`, and this machine has only the MSVC
      target. Nothing has compiled this half since the Windows-only work (`src/win32.rs`, `src/help.rs`, the `trash`
@@ -82,7 +82,7 @@ is a row here saying so, never a promise in a conversation.
    - *What would falsify it*: a plan to ship on another platform.
    - *Origin*: sweep 2026-11-08 step 4, not yet committed to build.
 6. ~~**Merge `sweep-6-rename-stem`?**~~ Done 2026-11-08: merged at the maintainer's word (`833ff7d`).
-   - *What*: `unique_rename_target` (`src/main.rs:864`) builds the new name with `to_string_lossy`, so a stem that
+   - *What*: `unique_rename_target` (`src/main.rs:867`) builds the new name with `to_string_lossy`, so a stem that
      is not valid Unicode (a lone surrogate, legal on NTFS) is renamed to `U+FFFD…` along with the extension fix.
      The branch builds it as an `OsString`, with a test that fails without the fix.
    - *Why it is not the obvious thing*: it adds 512 bytes to the exe (3,604,992 → 3,605,504), and a sweep merges

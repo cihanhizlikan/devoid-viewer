@@ -320,6 +320,9 @@ comment that STATES a number a tool computes is a cached derived value**: remove
   PowerShell** (`[regex]::Matches` over each file, then `Test-Path`): in Git Bash, `${p//\\//}` deletes every `/`
   rather than turning `\` into `/`, and the tool layer mangles a `sed` backslash, so the first run of sweep
   2026-11-08 reported `src/main.rs` missing. A miss on a file that plainly exists is the instrument, not drift.
+- **Line references in `docs/roadmap.md`**: every `path:line` (and bare `:line` after one) a row cites must still
+  point at the item it names. A merge above the line moves it without touching the row: the second run of
+  2026-11-08 found two that were stale after one fix had merged.
 - **Claims of STATE**: a sentence saying a thing "is off", "is not split yet", "about 60 lines", a size in bytes, a
   benchmark number, or a count. Read each against what decides it. **A claim decays by being OVERTAKEN, not
   contradicted.**
