@@ -1273,7 +1273,9 @@ mod tests {
     use super::*;
     use loader::Frame;
 
-    const BG_PIXEL: u32 = 0x002A_2A2A;
+    /// The background grey as a softbuffer pixel, computed independently of
+    /// `pack_rgb` so the tests follow `BG` rather than pin its value.
+    const BG_PIXEL: u32 = BG as u32 * 0x0001_0101;
 
     fn single_frame(width: u32, height: u32, pixels: Vec<u8>) -> DecodedImage {
         DecodedImage {
@@ -1298,8 +1300,15 @@ mod tests {
     fn composite_handles_opaque_transparent_and_partial_alpha() {
         assert_eq!(composite(255, 0, 0, 255), 0x00FF_0000);
         assert_eq!(composite(255, 0, 0, 0), BG_PIXEL);
-        // (255·128 + 42·127) / 255 = 148, (0·128 + 42·127) / 255 = 20
-        assert_eq!(composite(255, 0, 0, 128), pack_rgb(148, 20, 20));
+        // Half alpha lands halfway between the colour and the background.
+        let half = composite(255, 0, 0, 128);
+        let (r, g, b) = (half >> 16, (half >> 8) & 0xFF, half & 0xFF);
+        let bg = u32::from(BG);
+        assert!(r.abs_diff((255 + bg) / 2) <= 1, "red {r}");
+        assert!(g.abs_diff(bg / 2) <= 1 && g == b, "green {g}, blue {b}");
+        // A fifth of the way, so a swapped weight cannot pass as halfway does.
+        let fifth = composite(255, 0, 0, 51) >> 16;
+        assert!(fifth.abs_diff(bg + (255 - bg) / 5) <= 1, "red {fifth}");
     }
 
     #[test]

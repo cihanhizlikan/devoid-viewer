@@ -234,7 +234,7 @@ mod tests {
         let mut buf = vec![0x00FF_FFFF; (w * h) as usize];
         let mut help = Help::default();
         help.draw(&mut buf, w, h, 1.0);
-        assert_eq!(help.rendered.as_ref().expect("rendered").px, 15);
+        assert_eq!(help.rendered.as_ref().expect("rendered").px, BASE_PX as u32);
         assert!(buf.contains(&KEY_COLOUR), "text");
         assert_eq!(buf[0], 0x003F_3F3F, "corners are dimmed too");
         assert_eq!(buf[buf.len() - 1], 0x003F_3F3F);
@@ -242,12 +242,13 @@ mod tests {
 
     #[test]
     fn a_small_window_gets_a_smaller_panel_that_fits() {
-        let full = Rendered::new(15).expect("rendered");
+        let base = BASE_PX as u32;
+        let full = Rendered::new(base).expect("rendered");
         let (w, h) = (full.width * 3 / 4, full.height * 3 / 4);
         let mut help = Help::default();
         help.draw(&mut vec![0; (w * h) as usize], w, h, 1.0);
         let r = help.rendered.as_ref().expect("rendered");
-        assert!(r.px < 15 && r.fits(w, h), "px {} for {w}×{h}", r.px);
+        assert!(r.px < base && r.fits(w, h), "px {} for {w}×{h}", r.px);
 
         // Drawing again at the same size keeps the rendering.
         let px = r.px;

@@ -21,4 +21,20 @@ is a row here saying so, never a promise in a conversation.
 
 ## From sweeps
 
-None yet: no `/sweep` has run.
+### Sweep 2026-11-08
+
+1. **The two writes to the user's files have no test that reads the disk afterwards.**
+   - *What*: the wrong-extension rename (`offer_rename`, `src/main.rs:822`, `std::fs::rename` at :843) and the
+     delete (`request_delete`, `src/main.rs:535`, `trash::delete` at :548) are tested only around the edges:
+     `unique_rename_target` picks the name, nothing checks that the file then has it, and nothing tests the delete.
+     `CLAUDE.md` asks for a test that shows what is on disk.
+   - *Why it is not the obvious thing*: both calls sit behind a blocking message box. A test needs the dialog split
+     from the file operation, which moves code in `main.rs`. And a Recycle Bin test writes to the maintainer's real
+     Recycle Bin, so Patina keeps its tests of that shape `#[ignore]`d, which here would raise
+     `profile:baseline_ignored` from 0.
+   - *Recommendation*: split each into a dialog-free `fn` returning `io::Result`, and test the rename in a tempdir
+     (old name gone, new name present, same bytes). For the delete, test only that the file has left the directory,
+     ignored and named in the profile, or take the cost of leaving it untested and say so in
+     `docs/settled-decisions.md`.
+   - *What would falsify it*: a test already exercising either path on disk.
+   - *Origin*: sweep 2026-11-08 step 2, not yet committed to build.
