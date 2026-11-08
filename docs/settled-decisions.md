@@ -121,6 +121,12 @@ reconstruction (`jxl-jbr`, `brotli-decompressor`), and no feature turns it off. 
 `deny.toml` with this reason. **Re-opened by:** a 32-bit build shipping, a jxl advisory that reaches 64-bit, or a
 jxl-oxide release that makes reconstruction optional.
 
+## `trash` stays on 5.2.9 (2026-11-08)
+5.3.0 is a compatible update that grew the release exe by 11,264 bytes (3,608,064 → 3,619,328) and brings no fix
+Devoid needs. The lockfile holds 5.2.9, and dependencies are updated one at a time (`cargo update -p <crate>`),
+never in bulk, with the exe size checked each time. **Re-opened by:** a 5.3+ fix to the Windows backend, an
+advisory against 5.2, or a release that no longer grows the exe.
+
 ## Help is an overlay, not a pop-up window (2026-11-01)
 `H` draws the key table into the viewer's own frame: the whole window dimmed to quarter brightness, the table
 centred on it in Segoe UI, no panel. A pop-up was weighed and rejected: it takes focus, so the arrows, F and Q

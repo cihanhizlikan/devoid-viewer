@@ -1087,6 +1087,13 @@ fn main() {
 
     let start_hidden = initial_path.is_some();
 
+    // The decode needs only the proxy, so it starts before the window is built
+    // and runs while Windows creates it.
+    let mut app = App::new(msg_tx, msg_rx);
+    if let Some(path) = initial_path {
+        app.open_image(path, OpenMode::FirstImage, &proxy);
+    }
+
     let window = Arc::new(
         WindowBuilder::new()
             .with_title(APP_NAME)
@@ -1108,12 +1115,7 @@ fn main() {
     let mut surface = Surface::new(&ctx, window.clone()).expect("softbuffer surface");
     paint_background(&mut surface, &window);
 
-    let mut app = App::new(msg_tx, msg_rx);
     let mut shown = !start_hidden;
-
-    if let Some(path) = initial_path {
-        app.open_image(path, OpenMode::FirstImage, &proxy);
-    }
 
     event_loop
         .run(move |event, elwt| {

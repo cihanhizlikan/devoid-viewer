@@ -38,7 +38,8 @@ is a row here saying so, never a promise in a conversation.
      `docs/settled-decisions.md`.
    - *What would falsify it*: a test already exercising either path on disk.
    - *Origin*: sweep 2026-11-08 step 2, not yet committed to build.
-2. **`trash` 5.3.0 is a compatible update that grows the exe by 11,264 bytes.**
+2. ~~**`trash` 5.3.0 is a compatible update that grows the exe by 11,264 bytes.**~~ Done 2026-11-08: settled, `trash`
+   stays on 5.2.9 (`docs/settled-decisions.md`).
    - *What*: `cargo update -p trash` (5.2.9 → 5.3.0, drops `urlencoding`) took `DevoidViewer.exe` from 3,608,064
      to 3,619,328 bytes (release, `--locked`, same machine); the suite was not run on it. The lockfile stays on
      5.2.9.
@@ -59,7 +60,11 @@ is a row here saying so, never a promise in a conversation.
      can be measured.
    - *What would falsify it*: notify 8 on a `windows-sys` other than 0.61 (a new duplicate rather than one fewer).
    - *Origin*: sweep 2026-11-08 step 3, not yet committed to build.
-4. **`winit` is a major behind (0.29.15; 0.30.13 is out).**
+4. **`winit` is a major behind (0.29.15; 0.30.13 is out).** Measured 2026-11-08, with row 3, on the unmerged branch
+   `feature/winit-030`: +49,664 bytes (winit +45,568, notify 0.7 +4,096), one `windows-sys` duplicate left (0.52
+   beside 0.61), and no startup gain over 0.29 once the first decode started before the window
+   (`docs/benchmarks.md`). Not merged: the bar was no growth. **The maintainer's call**: keep 0.29, or take +1.4%
+   for a maintained line.
    - *What*: 0.30 replaces the closure event loop with the `ApplicationHandler` trait. Every window, input and
      wake-up path in `src/main.rs` moves, along with `win32::install_system_command_hook`, which takes winit's
      `EventLoopBuilder`.

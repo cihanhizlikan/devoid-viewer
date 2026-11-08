@@ -102,3 +102,21 @@ allocation and copy is gone; an in-process A/B of the decode alone, alternating 
 all three runs although they ran during that other build (medians of 7: 89.7 → 83.8, 262.7 → 244.4, 255.0 →
 239.8 ms). The PNG fixture was already RGBA, so it is unchanged. Binary: 3,608,064 bytes,
 +1,536 over the previous commit.
+
+### First decode before the window — 2026-11-08
+
+`main` started the first image's decode only after the window and the softbuffer surface were built. The decode
+needs only the event-loop proxy, so it now starts first and runs while Windows creates the window. Found while
+porting to winit 0.30 (roadmap rows 3–4), which did the same reorder and opened images ~20 ms sooner; this
+measurement shows the reorder, not winit, is the gain.
+
+Same session, interleaved new → 0.29 → winit 0.30, twice, 15 runs per case; load between 10% and 76%.
+
+| Case | Visible ms (median) new | 0.29 before | winit 0.30 | Working set MB |
+|---|---:|---:|---:|---:|
+| No image (empty window) | 42.6 / 42.5 | 41.2 / 41.9 | 44.3 / 41.4 | 16.8 |
+| PNG 1920×1080 | **60.9 / 61.9** | 80.0 / 81.3 | 62.3 / 61.4 | 30.1 |
+| JPEG 4000×3000 (12 MP) | **122.3 / 109.4** | 136.3 / 132.1 | 114.9 / 114.3 | 66.1 |
+
+PNG −19 ms (−24%), JPEG −18 ms (−14%); the empty window is unchanged, since it decodes nothing. Memory is
+unchanged. Binary: 3,606,528 bytes, unchanged; winit 0.30 measured 3,656,192.
