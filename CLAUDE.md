@@ -11,7 +11,8 @@ footprint**, so a change that adds startup work, memory or binary size has to ea
 - `src/win32.rs` — every Win32 call, behind safe functions; the only module where `unsafe` compiles.
 - `src/help.rs` — the `H` key-bindings overlay, text in Segoe UI via `win32::render_text`; its table must match the
   README's.
-- `src/nav.rs` — the sibling-file list for one directory, natural sort, wraparound navigation.
+- `src/nav.rs` — the sibling-file list for one directory, in Explorer's order (`win32::compare_logical`),
+  wraparound navigation.
 - `scripts/bench.ps1` — startup time and memory of the release build; baseline and method in
   [docs/benchmarks.md](docs/benchmarks.md). Run it before and after anything that touches startup or decoding.
 - `build.rs` — embeds `devoid.ico` and version resources. `devoid_viewer_setup.iss` — Inno Setup installer.
