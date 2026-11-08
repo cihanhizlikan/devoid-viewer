@@ -165,6 +165,22 @@ const JXL_CONTAINER_MAGIC: [u8; 12] = [
     0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A,
 ];
 
+/// The largest width or height accepted, checked against the header before
+/// any full-size buffer exists. 32 768 px per side is the cap most mainstream
+/// viewers use. Without it a 118-byte file claiming 60 000 × 60 000 px asks
+/// for a 14 GB buffer, and a failed allocation aborts the process.
+const MAX_DIM: u32 = 32_768;
+
+/// `Err` when either side of a header's claimed size exceeds `MAX_DIM`.
+fn check_dimensions(width: u32, height: u32) -> Result<(), BoxError> {
+    if width > MAX_DIM || height > MAX_DIM {
+        return Err(
+            format!("image too large ({width}×{height}); maximum dimension is {MAX_DIM}").into(),
+        );
+    }
+    Ok(())
+}
+
 /// Identify a raster image format from its first few bytes.
 ///
 /// This is the single source of truth for magic-byte detection of all formats
@@ -292,6 +308,7 @@ fn decode_to_rgba8(decoder: impl image::ImageDecoder) -> Result<DecodedImage, Bo
     use image::ColorType;
 
     let (w, h) = decoder.dimensions();
+    check_dimensions(w, h)?;
     let channels = match decoder.color_type() {
         ColorType::Rgba8 => 4,
         ColorType::Rgb8 => 3,
@@ -339,6 +356,7 @@ fn decode_gif(path: &Path) -> Result<DecodedImage, BoxError> {
     let file = std::fs::File::open(path)?;
     let decoder = GifDecoder::new(std::io::BufReader::new(file))?;
     let (width, height) = decoder.dimensions();
+    check_dimensions(width, height)?;
 
     // Corrupt individual frames are skipped rather than aborting the
     // whole decode — a partially broken GIF is more useful than nothing.
@@ -376,6 +394,8 @@ fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
 
     let file = std::fs::File::open(path)?;
     let mut image = JxlImage::builder().read(std::io::BufReader::new(file))?;
+    // Before rendering: `render_frame` allocates the whole frame.
+    check_dimensions(image.width(), image.height())?;
     image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
         jxl_oxide::RenderingIntent::Relative,
     ));
@@ -387,17 +407,6 @@ fn decode_jxl(path: &Path) -> Result<DecodedImage, BoxError> {
     let width = stream.width() as usize;
     let height = stream.height() as usize;
     let channels = stream.channels() as usize;
-
-    // Guard against absurdly large images before allocating potentially
-    // gigabytes of memory. 32 768 px per side is the cap used by most
-    // mainstream viewers and matches common GPU texture limits.
-    const MAX_DIM: usize = 32_768;
-    if width > MAX_DIM || height > MAX_DIM {
-        return Err(format!(
-            "JXL image too large ({width}×{height}); maximum dimension is {MAX_DIM}"
-        )
-        .into());
-    }
     let pixel_count = width
         .checked_mul(height)
         .ok_or("JXL image dimensions overflow")?;
@@ -748,5 +757,81 @@ mod tests {
             jxl_samples_to_rgba8(&[-0.5, 2.0, f32::NAN], 1, 3)[..3],
             [0, 255, 0]
         );
+    }
+
+    // ── Size cap ──────────────────────────────────────────────────────────────
+
+    /// A 24-bit BMP header claiming `side` × `side` px, with almost no pixels.
+    fn bmp_header(side: i32) -> Vec<u8> {
+        let mut b = b"BM".to_vec();
+        b.extend_from_slice(&118u32.to_le_bytes()); // file size
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&54u32.to_le_bytes()); // pixel data offset
+        b.extend_from_slice(&40u32.to_le_bytes()); // BITMAPINFOHEADER
+        b.extend_from_slice(&side.to_le_bytes());
+        b.extend_from_slice(&side.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes()); // planes
+        b.extend_from_slice(&24u16.to_le_bytes()); // bits per pixel
+        b.extend_from_slice(&[0; 24 + 64]);
+        b
+    }
+
+    /// A GIF whose logical screen is `side` × `side` px, holding one 1 × 1 frame.
+    fn gif_header(side: u16) -> Vec<u8> {
+        let mut b = b"GIF89a".to_vec();
+        b.extend_from_slice(&side.to_le_bytes());
+        b.extend_from_slice(&side.to_le_bytes());
+        b.extend_from_slice(&[0x80, 0, 0]); // a two-entry global colour table
+        b.extend_from_slice(&[0, 0, 0, 0xFF, 0xFF, 0xFF]);
+        b.extend_from_slice(&[0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0]); // 1 × 1 at (0, 0)
+        b.extend_from_slice(&[2, 2, 0x44, 0x01, 0, 0x3B]); // LZW data, then the trailer
+        b
+    }
+
+    /// A JPEG XL codestream header claiming `side` × `side` px, and no frame.
+    fn jxl_header(side: u32) -> Vec<u8> {
+        // The fields, LSB first: not `small`; height as selector 2, Bits(18) + 1;
+        // aspect ratio 1:1; image metadata all default.
+        let fields: [(u32, u32); 5] = [(0, 1), (2, 2), (side - 1, 18), (1, 3), (1, 1)];
+        let mut bits = Vec::new();
+        for (value, width) in fields {
+            bits.extend((0..width).map(|i| (value >> i) & 1 == 1));
+        }
+        let mut b = JXL_CODESTREAM_MAGIC.to_vec();
+        b.extend(bits.chunks(8).map(|byte| {
+            byte.iter()
+                .enumerate()
+                .fold(0u8, |acc, (i, &bit)| acc | (u8::from(bit) << i))
+        }));
+        b.extend_from_slice(&[0; 64]);
+        b
+    }
+
+    /// A header alone can claim gigabytes; the cap must refuse it before a
+    /// decoder or this module allocates the frame, since a failed allocation
+    /// aborts the process rather than returning an error.
+    #[test]
+    fn a_header_over_the_size_cap_is_refused_before_decoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let too_large = |result: Result<DecodedImage, BoxError>, what: &str| {
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("{what}: decoded"))
+                .to_string();
+            assert!(err.contains("too large"), "{what}: {err}");
+        };
+        let bmp = write(&dir, "big.bmp", &bmp_header(60_000));
+        too_large(decode_raster(&bmp, DecodeStrategy::ByExtension), "bmp");
+        let gif = write(&dir, "big.gif", &gif_header(40_000));
+        too_large(decode_gif(&gif), "gif");
+        let jxl = write(&dir, "big.jxl", &jxl_header(40_000));
+        too_large(decode_jxl(&jxl), "jxl");
+    }
+
+    #[test]
+    fn the_size_cap_is_inclusive() {
+        assert!(check_dimensions(MAX_DIM, MAX_DIM).is_ok());
+        assert!(check_dimensions(MAX_DIM + 1, 1).is_err());
+        assert!(check_dimensions(1, MAX_DIM + 1).is_err());
     }
 }
