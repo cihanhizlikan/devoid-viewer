@@ -77,8 +77,12 @@ and grey-alpha are decoded into its front and widened in place (`decode_to_rgba8
 | ICO | `00 00 01 00` |
 | WebP | `52 49 46 46 ?? ?? ?? ?? 57 45 42 50` |
 
-JPEG XL is sniffed separately. `decode_jxl` rejects dimensions over 32,768 px and guards the buffer size with
-`checked_mul`.
+JPEG XL is sniffed separately.
+
+**Size cap.** Every decoder checks the header's claimed size against `MAX_DIM` (32,768 px per side) before it or
+`decode_to_rgba8` allocates the frame: a header alone can claim gigabytes, and a failed allocation aborts the
+process rather than returning an error. `decode_jxl` checks before `render_frame`, `decode_gif` before compositing
+frames onto the logical screen, and the buffer size is computed with `checked_mul`.
 
 ## Rendering
 
