@@ -81,3 +81,39 @@ is a row here saying so, never a promise in a conversation.
      and an untested sort. The other option is a `cargo check --target x86_64-unknown-linux-gnu` job in CI.
    - *What would falsify it*: a plan to ship on another platform.
    - *Origin*: sweep 2026-11-08 step 4, not yet committed to build.
+6. **Merge `sweep-6-rename-stem`?** The rename fix is built, verified and committed (`833ff7d`), but not merged.
+   - *What*: `unique_rename_target` (`src/main.rs:864`) builds the new name with `to_string_lossy`, so a stem that
+     is not valid Unicode (a lone surrogate, legal on NTFS) is renamed to `U+FFFD…` along with the extension fix.
+     The branch builds it as an `OsString`, with a test that fails without the fix.
+   - *Why it is not the obvious thing*: it adds 512 bytes to the exe (3,604,992 → 3,605,504), and a sweep merges
+     only corrections that do not grow it.
+   - *Recommendation*: merge it. 512 bytes is one unit of PE file alignment, and the defect renames a user's file
+     to a name they did not choose.
+   - *What would falsify it*: a rule that the exe never grows, whatever the fix.
+   - *Origin*: sweep 2026-11-08 step 6, committed on `refs/heads/sweep-6-rename-stem`.
+7. **Merge `sweep-6-size-cap`?** A crafted file can abort the viewer. The fix is built, verified and committed
+   (`81cc6c3`), but not merged.
+   - *What*: only `decode_jxl` had a size cap, and it ran after `render_frame` had allocated the frame. A
+     118-byte BMP claiming 60,000 × 60,000 px made `decode_to_rgba8` allocate 14 GB, and a GIF claiming a
+     40,000 px screen decoded onto a full-size canvas. A failed allocation aborts the process; it never becomes the
+     "Failed to decode" message. The branch applies the existing 32,768 px cap (`MAX_DIM`) in all three paths before
+     allocation, with a test per format that fails without its check.
+   - *Why it is not the obvious thing*: +512 bytes (3,604,992 → 3,605,504). The cap value is also a product rule:
+     a real image over 32,768 px per side (a stitched panorama) will now be refused instead of opened.
+   - *Recommendation*: merge it. The 32,768 px value is the one `decode_jxl` already used, and an abort on a
+     crafted file is worse than refusing an image of over a gigapixel.
+   - *What would falsify it*: a real user image over 32,768 px per side that opened before.
+   - *Origin*: sweep 2026-11-08 step 6, committed on `refs/heads/sweep-6-size-cap`.
+8. **The wrong-extension rename can overwrite a file created while its dialog is open.**
+   - *What*: `offer_rename` (`src/main.rs:822`) picks a free name with `unique_rename_target`, shows a blocking
+     *Rename?* box, then calls `std::fs::rename`, which on Windows replaces an existing target. A file given that
+     name while the box is open, by a sync client or a download, is overwritten without a word.
+   - *Why it is not the obvious thing*: the window is the dialog's lifetime, so it is rare, and a no-clobber rename
+     needs either `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` (new FFI in `src/win32.rs`) or
+     `std::fs::hard_link` followed by `remove_file` (safe, same volume only, two steps).
+   - *Recommendation*: re-pick the name after the dialog closes (no new code paths, narrows the window to
+     microseconds), and say in the commit that the race is narrowed, not closed. Take the FFI only if a report
+     shows it happening.
+   - *What would falsify it*: `std::fs::rename` refusing to replace on this Windows build (a test in a tempdir
+     settles it).
+   - *Origin*: sweep 2026-11-08 step 6, not yet committed to build.
