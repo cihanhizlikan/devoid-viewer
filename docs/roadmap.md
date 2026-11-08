@@ -134,7 +134,7 @@ is a row here saying so, never a promise in a conversation.
 
 ### Sweep 2026-11-08, second run
 
-10. **An image over the size cap is reported as corrupt.**
+10. ~~**An image over the size cap is reported as corrupt.**~~ Done 2026-11-08 (`fix/load-error-message`): the message now ends with the decoder's reason.
     - *What*: opening a BMP that claims 60,000 × 60,000 px shows *"Cannot open image: Failed to decode .bmp
       file"* (measured with a temporary test calling `load_image`). `check_dimensions` returns *"image too large
       (W×H); maximum dimension is 32768"*, but `load_image` (`src/loader.rs:96`) drops the decode error when the

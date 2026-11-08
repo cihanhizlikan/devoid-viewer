@@ -96,9 +96,10 @@ pub fn is_supported(path: &Path) -> bool {
 pub fn load_image(path: &Path) -> LoadOutcome {
     let ext = file_ext(path);
 
-    if let Ok(img) = decode_by_ext(&ext, path, DecodeStrategy::ByExtension) {
-        return LoadOutcome::Ok(img);
-    }
+    let first_error = match decode_by_ext(&ext, path, DecodeStrategy::ByExtension) {
+        Ok(img) => return LoadOutcome::Ok(img),
+        Err(e) => e,
+    };
 
     match sniff_format(path) {
         Some(actual) if actual != ext => {
@@ -108,13 +109,15 @@ pub fn load_image(path: &Path) -> LoadOutcome {
             }
         }
         Some(_) => {
-            // Sniffed the same extension but it still failed — corrupt or truncated.
+            // The extension is right and decoding still failed. Say why: the
+            // decoder's own reason tells a truncated file from one over the
+            // size cap, which would otherwise read as corrupt.
             let desc = if ext.is_empty() {
                 "file".into()
             } else {
                 format!(".{ext} file")
             };
-            LoadOutcome::Unsupported(format!("Failed to decode {desc}"))
+            LoadOutcome::Unsupported(format!("Failed to decode {desc}: {first_error}"))
         }
         None => LoadOutcome::Unsupported("Not a recognised image format".into()),
     }
@@ -698,7 +701,28 @@ mod tests {
         let png = encode(ImageFormat::Png);
         let path = write(&dir, "cut.png", &png[..png.len() / 2]);
         match load_image(&path) {
-            LoadOutcome::Unsupported(reason) => assert_eq!(reason, "Failed to decode .png file"),
+            LoadOutcome::Unsupported(reason) => {
+                assert!(
+                    reason.starts_with("Failed to decode .png file: "),
+                    "{reason}"
+                );
+                assert!(
+                    reason.len() > "Failed to decode .png file: ".len(),
+                    "no reason given"
+                );
+            }
+            _ => panic!("expected Unsupported"),
+        }
+    }
+
+    /// An image over the size cap is not a broken file, and the message the
+    /// user sees has to say so.
+    #[test]
+    fn an_image_over_the_size_cap_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "big.bmp", &bmp_header(60_000));
+        match load_image(&path) {
+            LoadOutcome::Unsupported(reason) => assert!(reason.contains("too large"), "{reason}"),
             _ => panic!("expected Unsupported"),
         }
     }
